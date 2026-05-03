@@ -1,0 +1,1150 @@
+import { DragEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+
+type ViewerState = {
+  boardId: string;
+  assetId: string;
+};
+
+type CropHandle = "move" | "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
+
+const INTERNAL_DRAG_MIME = "application/x-moss-asset-paths";
+
+const formatBytes = (size: number) => {
+  if (size === 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1);
+  const value = size / 1024 ** index;
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+};
+
+const formatDate = (value: string) =>
+  new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+
+const getBridge = () => window.moss;
+
+const getParentBoardId = (boardId: string) => {
+  const segments = boardId.split("/");
+  if (segments.length <= 1) {
+    return null;
+  }
+
+  return segments.slice(0, -1).join("/");
+};
+
+const isTopLevelBoard = (boardId: string) => !boardId.includes("/");
+
+const extractDroppedFilePaths = (event: DragEvent) =>
+  Array.from(event.dataTransfer.files)
+    .map((file) => (file as File & { path?: string }).path)
+    .filter((value): value is string => Boolean(value));
+
+function App() {
+  const devDefaultFolder = "/Users/johnhumphrys/Documents/Moodboards";
+  const [library, setLibrary] = useState<VaultData | null>(null);
+  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<ViewerState | null>(null);
+  const [showInfo, setShowInfo] = useState(true);
+  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const [isPicking, setIsPicking] = useState(false);
+  const [manualFolderPath, setManualFolderPath] = useState(devDefaultFolder);
+  const [appState, setAppState] = useState<AppState>({ recentVaults: [] });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [isMutatingAssets, setIsMutatingAssets] = useState(false);
+  const [assetDimensions, setAssetDimensions] = useState<Record<string, { width: number; height: number }>>({});
+  const [assetPreviewSrcs, setAssetPreviewSrcs] = useState<Record<string, string>>({});
+  const [assetPreviewLoaded, setAssetPreviewLoaded] = useState<Record<string, boolean>>({});
+  const [visibleAssetIds, setVisibleAssetIds] = useState<string[]>([]);
+  const [boardPreviewSrcs, setBoardPreviewSrcs] = useState<Record<string, string>>({});
+  const [viewerImageLoading, setViewerImageLoading] = useState(false);
+  const [viewerImageSrc, setViewerImageSrc] = useState<string | null>(null);
+  const [cropMode, setCropMode] = useState(false);
+  const [cropRect, setCropRect] = useState<CropRect>({ x: 0.1, y: 0.1, width: 0.8, height: 0.8 });
+  const [cropFrameSize, setCropFrameSize] = useState({ width: 1, height: 1 });
+  const [savingCrop, setSavingCrop] = useState(false);
+  const [assetActionMenu, setAssetActionMenu] = useState<{ assetId: string; x: number; y: number } | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const [moveTargetBoardId, setMoveTargetBoardId] = useState("");
+  const [dragTargetBoardId, setDragTargetBoardId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const hasDesktopBridge = typeof getBridge() !== "undefined";
+  const longPressTimerRef = useRef<number | null>(null);
+  const cropDragRef = useRef<{
+    handle: CropHandle;
+    startX: number;
+    startY: number;
+    startRect: CropRect;
+  } | null>(null);
+
+  const rootBoards = useMemo(
+    () => library?.boards.filter((board) => isTopLevelBoard(board.id)) ?? [],
+    [library]
+  );
+
+  const selectedBoard = useMemo(
+    () => library?.boards.find((board) => board.id === selectedBoardId) ?? rootBoards[0] ?? null,
+    [library, rootBoards, selectedBoardId]
+  );
+
+  const childBoards = useMemo(
+    () => library?.boards.filter((board) => getParentBoardId(board.id) === selectedBoard?.id) ?? [],
+    [library, selectedBoard]
+  );
+
+  const moveTargets = useMemo(
+    () => library?.boards.filter((board) => board.id !== selectedBoard?.id && !board.synthetic) ?? [],
+    [library, selectedBoard]
+  );
+
+  const selectedAsset = useMemo(() => {
+    if (!viewer || !selectedBoard) {
+      return null;
+    }
+
+    return selectedBoard.assets.find((asset) => asset.id === viewer.assetId) ?? null;
+  }, [selectedBoard, viewer]);
+
+  const selectedAssetDimensions = selectedAsset ? assetDimensions[selectedAsset.id] : undefined;
+
+  const selectedAssets = useMemo(
+    () => selectedBoard?.assets.filter((asset) => selectedAssetIds.includes(asset.id)) ?? [],
+    [selectedAssetIds, selectedBoard]
+  );
+
+  const boardInitialLoading = Boolean(
+    selectedBoard && selectedBoard.assets.length > 0 && visibleAssetIds.some((assetId) => !assetPreviewLoaded[assetId])
+  );
+
+  useEffect(() => {
+    const loadAppState = async () => {
+      if (!hasDesktopBridge) {
+        return;
+      }
+
+      const nextAppState = await getBridge().getAppState();
+      setAppState(nextAppState);
+
+      if (nextAppState.lastVaultPath) {
+        try {
+          const nextLibrary = await getBridge().loadVault(nextAppState.lastVaultPath);
+          loadLibrary(nextLibrary);
+        } catch {
+          setErrorMessage("Could not reopen the last folder. Choose it again in Settings.");
+        }
+      } else {
+        const devPath = await getBridge().getDevVaultPath();
+        if (devPath) {
+          setManualFolderPath(devPath);
+        }
+      }
+    };
+
+    void loadAppState();
+  }, [hasDesktopBridge]);
+
+  useEffect(() => {
+    if (!library) {
+      return;
+    }
+
+    document.documentElement.dataset.theme = theme;
+    if (hasDesktopBridge) {
+      void getBridge().setTheme(theme);
+    }
+  }, [hasDesktopBridge, library, theme]);
+
+  useEffect(() => {
+    if (!selectedAsset) {
+      return;
+    }
+
+    setViewerImageLoading(true);
+    setViewerImageSrc(null);
+    setCropMode(false);
+    setCropRect({ x: 0.1, y: 0.1, width: 0.8, height: 0.8 });
+  }, [selectedAsset]);
+
+  useEffect(() => {
+    const loadViewerAsset = async () => {
+      if (!selectedAsset) {
+        return;
+      }
+
+      if (!hasDesktopBridge) {
+        setViewerImageSrc(`file://${selectedAsset.absolutePath}`);
+        setViewerImageLoading(false);
+        return;
+      }
+
+      try {
+        const payload = await getBridge().loadOriginalAsset(selectedAsset.absolutePath);
+        setViewerImageSrc(payload.dataUrl);
+
+        if (payload.width && payload.height) {
+          setAssetDimensions((current) => ({
+            ...current,
+            [selectedAsset.id]: { width: payload.width, height: payload.height }
+          }));
+        }
+      } catch {
+        setErrorMessage(`Could not load ${selectedAsset.name}.`);
+        setViewerImageLoading(false);
+      }
+    };
+
+    void loadViewerAsset();
+  }, [hasDesktopBridge, selectedAsset]);
+
+  useEffect(() => {
+    const loadBoardPreviews = async () => {
+      if (!hasDesktopBridge || !library) {
+        return;
+      }
+
+      const boardsToPreview = [...rootBoards, ...childBoards];
+      const nextPreviewEntries = await Promise.all(
+        boardsToPreview.map(async (board) => {
+          if (!board.previewAsset) {
+            return [board.id, ""] as const;
+          }
+
+          try {
+            const payload = await getBridge().loadPreviewAsset(
+              board.previewAsset.absolutePath,
+              board.previewAsset.relativePath,
+              board.previewAsset.modifiedAt,
+              board.previewAsset.size
+            );
+            return [board.id, payload.dataUrl] as const;
+          } catch {
+            return [board.id, `file://${board.previewAsset.absolutePath}`] as const;
+          }
+        })
+      );
+
+      setBoardPreviewSrcs((current) => ({
+        ...current,
+        ...Object.fromEntries(nextPreviewEntries.filter(([, src]) => src))
+      }));
+    };
+
+    void loadBoardPreviews();
+  }, [childBoards, hasDesktopBridge, library, rootBoards]);
+
+  useEffect(() => {
+    const loadAssetPreviews = async () => {
+      if (!selectedBoard || !hasDesktopBridge) {
+        return;
+      }
+
+      const pendingAssets = selectedBoard.assets.filter(
+        (asset) => visibleAssetIds.includes(asset.id) && !assetPreviewSrcs[asset.id]
+      );
+
+      if (pendingAssets.length === 0) {
+        return;
+      }
+
+      const nextPreviewEntries = await Promise.all(
+        pendingAssets.map(async (asset) => {
+          try {
+            const payload = await getBridge().loadPreviewAsset(
+              asset.absolutePath,
+              asset.relativePath,
+              asset.modifiedAt,
+              asset.size
+            );
+            return [asset.id, payload.dataUrl] as const;
+          } catch {
+            return [asset.id, `file://${asset.thumbnailPath ?? asset.absolutePath}`] as const;
+          }
+        })
+      );
+
+      setAssetPreviewSrcs((current) => ({
+        ...current,
+        ...Object.fromEntries(nextPreviewEntries)
+      }));
+  };
+
+    void loadAssetPreviews();
+  }, [assetPreviewSrcs, hasDesktopBridge, selectedBoard, visibleAssetIds]);
+
+  useEffect(() => {
+    if (!selectedBoard) {
+      return;
+    }
+
+    setAssetPreviewLoaded({});
+    setVisibleAssetIds(selectedBoard.assets.slice(0, 12).map((asset) => asset.id));
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setVisibleAssetIds((current) => {
+          const nextIds = new Set(current);
+
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              const assetId = (entry.target as HTMLElement).dataset.assetId;
+              if (assetId) {
+                nextIds.add(assetId);
+              }
+            }
+          }
+
+          return Array.from(nextIds);
+        });
+      },
+      {
+        rootMargin: "400px 0px"
+      }
+    );
+
+    const elements = Array.from(document.querySelectorAll<HTMLElement>("[data-asset-id]"));
+    elements.forEach((element) => observer.observe(element));
+
+    return () => observer.disconnect();
+  }, [selectedBoard]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!viewer || !selectedBoard) {
+        return;
+      }
+
+      const currentIndex = selectedBoard.assets.findIndex((asset) => asset.id === viewer.assetId);
+      if (event.key === "Escape") {
+        setViewer(null);
+      } else if (event.key === "ArrowRight" && currentIndex < selectedBoard.assets.length - 1) {
+        setViewer({ boardId: selectedBoard.id, assetId: selectedBoard.assets[currentIndex + 1].id });
+      } else if (event.key === "ArrowLeft" && currentIndex > 0) {
+        setViewer({ boardId: selectedBoard.id, assetId: selectedBoard.assets[currentIndex - 1].id });
+      } else if (event.key.toLowerCase() === "i") {
+        setShowInfo((current) => !current);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedBoard, viewer]);
+
+  const loadLibrary = (nextLibrary: VaultData, options?: { preserveCaches?: boolean }) => {
+    setLibrary(nextLibrary);
+    setTheme(nextLibrary.theme ?? "dark");
+    setSelectedBoardId((current) =>
+      nextLibrary.boards.some((board) => board.id === current) ? current : nextLibrary.boards[0]?.id ?? null
+    );
+    setViewer(null);
+    setSelectionMode(false);
+    setSelectedAssetIds([]);
+    setMoveTargetBoardId("");
+    if (!options?.preserveCaches) {
+      setAssetPreviewSrcs({});
+      setAssetPreviewLoaded({});
+      setBoardPreviewSrcs({});
+      setVisibleAssetIds([]);
+    }
+  };
+
+  const refreshAppState = async () => {
+    if (!hasDesktopBridge) {
+      return;
+    }
+
+    setAppState(await getBridge().getAppState());
+  };
+
+  const pickFolder = async () => {
+    if (!hasDesktopBridge) {
+      setErrorMessage("Folder selection only works inside the Electron app.");
+      return;
+    }
+
+    setIsPicking(true);
+    setErrorMessage(null);
+    try {
+      const nextLibrary = await getBridge().pickVault();
+      if (!nextLibrary) {
+        return;
+      }
+
+      loadLibrary(nextLibrary);
+      await refreshAppState();
+      setSettingsOpen(false);
+    } finally {
+      setIsPicking(false);
+    }
+  };
+
+  const openFolderPath = async (folderPath: string) => {
+    if (!hasDesktopBridge) {
+      setErrorMessage("Folder opening only works inside the Electron app.");
+      return;
+    }
+
+    try {
+      setErrorMessage(null);
+      setStatusMessage(null);
+      const nextLibrary = await getBridge().loadVault(folderPath);
+      loadLibrary(nextLibrary);
+      setManualFolderPath(folderPath);
+      await refreshAppState();
+      setSettingsOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not open that folder.";
+      setErrorMessage(message);
+    }
+  };
+
+  const openCurrentPathInput = async () => {
+    const trimmedPath = manualFolderPath.trim();
+    if (!trimmedPath) {
+      setErrorMessage("Enter a folder path first.");
+      return;
+    }
+
+    await openFolderPath(trimmedPath);
+  };
+
+  const updateTheme = async (nextTheme: ThemeMode) => {
+    setTheme(nextTheme);
+    if (library && hasDesktopBridge) {
+      await getBridge().persistTheme(library.rootPath, nextTheme);
+    }
+  };
+
+  const toggleStarAsset = async (asset: Asset) => {
+    if (!library || !hasDesktopBridge) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const nextLibrary = await getBridge().toggleStarAsset(library.rootPath, asset.relativePath);
+      loadLibrary(nextLibrary, { preserveCaches: true });
+      if (viewer && selectedBoard) {
+        const nextBoard = nextLibrary.boards.find((board) => board.id === selectedBoard.id);
+        const nextAsset = nextBoard?.assets.find((currentAsset) => currentAsset.relativePath === asset.relativePath);
+        if (nextBoard && nextAsset) {
+          setViewer({ boardId: nextBoard.id, assetId: nextAsset.id });
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not update the star.";
+      setErrorMessage(message);
+    }
+  };
+
+  const toggleSelectionMode = () => {
+    setSelectionMode((current) => !current);
+    setSelectedAssetIds([]);
+    setMoveTargetBoardId("");
+  };
+
+  const toggleAssetSelection = (assetId: string) => {
+    setSelectedAssetIds((current) =>
+      current.includes(assetId) ? current.filter((value) => value !== assetId) : [...current, assetId]
+    );
+  };
+
+  const openAsset = (assetId: string) => {
+    if (!selectedBoard) {
+      return;
+    }
+
+    if (selectionMode) {
+      toggleAssetSelection(assetId);
+      return;
+    }
+
+    setViewer({ boardId: selectedBoard.id, assetId });
+  };
+
+  const startLongPress = (event: ReactPointerEvent<HTMLButtonElement>, asset: Asset) => {
+    if (selectionMode) {
+      return;
+    }
+
+    window.clearTimeout(longPressTimerRef.current ?? undefined);
+    longPressTimerRef.current = window.setTimeout(() => {
+      setAssetActionMenu({
+        assetId: asset.id,
+        x: event.clientX,
+        y: event.clientY
+      });
+    }, 500);
+  };
+
+  const clearLongPress = () => {
+    window.clearTimeout(longPressTimerRef.current ?? undefined);
+    longPressTimerRef.current = null;
+  };
+
+  const stepViewer = (direction: -1 | 1) => {
+    if (!selectedBoard || !viewer) {
+      return;
+    }
+
+    const currentIndex = selectedBoard.assets.findIndex((asset) => asset.id === viewer.assetId);
+    const nextAsset = selectedBoard.assets[currentIndex + direction];
+    if (!nextAsset) {
+      return;
+    }
+
+    setViewer({ boardId: selectedBoard.id, assetId: nextAsset.id });
+  };
+
+  const performDeleteSingle = async (assetId: string) => {
+    if (!library || !selectedBoard || !hasDesktopBridge) {
+      return;
+    }
+
+    const asset = selectedBoard.assets.find((currentAsset) => currentAsset.id === assetId);
+    if (!asset) {
+      return;
+    }
+
+    setAssetActionMenu(null);
+    setIsMutatingAssets(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const nextLibrary = await getBridge().deleteAssets(library.rootPath, [asset.absolutePath]);
+      loadLibrary(nextLibrary);
+      setStatusMessage(`Deleted ${asset.name}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not delete the image.";
+      setErrorMessage(message);
+    } finally {
+      setIsMutatingAssets(false);
+    }
+  };
+
+  const performMoveSingle = async (assetId: string, boardId: string) => {
+    if (!library || !selectedBoard || !hasDesktopBridge) {
+      return;
+    }
+
+    const asset = selectedBoard.assets.find((currentAsset) => currentAsset.id === assetId);
+    if (!asset || !boardId) {
+      return;
+    }
+
+    setAssetActionMenu(null);
+    setIsMutatingAssets(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const nextLibrary = await getBridge().moveAssets(library.rootPath, boardId, [asset.absolutePath]);
+      loadLibrary(nextLibrary);
+      setStatusMessage(`Moved ${asset.name}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not move the image.";
+      setErrorMessage(message);
+    } finally {
+      setIsMutatingAssets(false);
+    }
+  };
+
+  const startCropInteraction = (handle: CropHandle, event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    cropDragRef.current = {
+      handle,
+      startX: event.clientX,
+      startY: event.clientY,
+      startRect: cropRect
+    };
+
+    const onPointerMove = (pointerEvent: PointerEvent) => {
+      const currentDrag = cropDragRef.current;
+      if (!currentDrag) {
+        return;
+      }
+
+      const dx = (pointerEvent.clientX - currentDrag.startX) / cropFrameSize.width;
+      const dy = (pointerEvent.clientY - currentDrag.startY) / cropFrameSize.height;
+      const minSize = 0.05;
+      let { x, y, width, height } = currentDrag.startRect;
+
+      if (currentDrag.handle.includes("e")) {
+        width = Math.min(1 - x, Math.max(minSize, currentDrag.startRect.width + dx));
+      }
+      if (currentDrag.handle.includes("s")) {
+        height = Math.min(1 - y, Math.max(minSize, currentDrag.startRect.height + dy));
+      }
+      if (currentDrag.handle.includes("w")) {
+        const nextX = Math.min(currentDrag.startRect.x + currentDrag.startRect.width - minSize, Math.max(0, currentDrag.startRect.x + dx));
+        width = currentDrag.startRect.width + (currentDrag.startRect.x - nextX);
+        x = nextX;
+      }
+      if (currentDrag.handle.includes("n")) {
+        const nextY = Math.min(currentDrag.startRect.y + currentDrag.startRect.height - minSize, Math.max(0, currentDrag.startRect.y + dy));
+        height = currentDrag.startRect.height + (currentDrag.startRect.y - nextY);
+        y = nextY;
+      }
+      if (currentDrag.handle === "move") {
+        x = Math.min(1 - width, Math.max(0, currentDrag.startRect.x + dx));
+        y = Math.min(1 - height, Math.max(0, currentDrag.startRect.y + dy));
+      }
+
+      setCropRect({ x, y, width, height });
+    };
+
+    const onPointerUp = () => {
+      cropDragRef.current = null;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const saveCrop = async () => {
+    if (!library || !selectedAsset || !selectedAssetDimensions || !hasDesktopBridge) {
+      return;
+    }
+
+    setSavingCrop(true);
+    try {
+      const nextLibrary = await getBridge().saveCropAsset(library.rootPath, selectedAsset.absolutePath, {
+        x: Math.round(cropRect.x * selectedAssetDimensions.width),
+        y: Math.round(cropRect.y * selectedAssetDimensions.height),
+        width: Math.round(cropRect.width * selectedAssetDimensions.width),
+        height: Math.round(cropRect.height * selectedAssetDimensions.height)
+      });
+      loadLibrary(nextLibrary);
+      setViewer({ boardId: selectedBoard!.id, assetId: selectedAsset.id });
+      setStatusMessage(`Saved crop for ${selectedAsset.name}.`);
+      setCropMode(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save crop.";
+      setErrorMessage(message);
+    } finally {
+      setSavingCrop(false);
+    }
+  };
+
+  const performDeleteSelected = async () => {
+    if (!library || selectedAssets.length === 0 || !hasDesktopBridge) {
+      return;
+    }
+
+    setIsMutatingAssets(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const nextLibrary = await getBridge().deleteAssets(
+        library.rootPath,
+        selectedAssets.map((asset) => asset.absolutePath)
+      );
+      loadLibrary(nextLibrary);
+      setStatusMessage(`Deleted ${selectedAssets.length} image${selectedAssets.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not delete the selected images.";
+      setErrorMessage(message);
+    } finally {
+      setIsMutatingAssets(false);
+    }
+  };
+
+  const performMoveSelected = async () => {
+    if (!library || selectedAssets.length === 0 || !moveTargetBoardId || !hasDesktopBridge) {
+      return;
+    }
+
+    setIsMutatingAssets(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const nextLibrary = await getBridge().moveAssets(
+        library.rootPath,
+        moveTargetBoardId,
+        selectedAssets.map((asset) => asset.absolutePath)
+      );
+      loadLibrary(nextLibrary);
+      setStatusMessage(`Moved ${selectedAssets.length} image${selectedAssets.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not move the selected images.";
+      setErrorMessage(message);
+    } finally {
+      setIsMutatingAssets(false);
+    }
+  };
+
+  const handleBoardDrop = async (event: DragEvent, targetBoardId: string) => {
+    event.preventDefault();
+    setDragTargetBoardId(null);
+
+    if (!library || !hasDesktopBridge) {
+      return;
+    }
+
+    const internalData = event.dataTransfer.getData(INTERNAL_DRAG_MIME);
+    if (internalData) {
+      const assetPaths = JSON.parse(internalData) as string[];
+      const nextLibrary = await getBridge().moveAssets(library.rootPath, targetBoardId, assetPaths);
+      loadLibrary(nextLibrary);
+      return;
+    }
+
+    const droppedPaths = extractDroppedFilePaths(event);
+    if (droppedPaths.length === 0) {
+      return;
+    }
+
+    const nextLibrary = await getBridge().importAssets(library.rootPath, targetBoardId, droppedPaths);
+    loadLibrary(nextLibrary);
+  };
+
+  const handleAssetDragStart = (event: DragEvent, asset: Asset) => {
+    const draggedAssets =
+      selectionMode && selectedAssetIds.includes(asset.id) ? selectedAssets.map((currentAsset) => currentAsset.absolutePath) : [asset.absolutePath];
+
+    event.dataTransfer.setData(INTERNAL_DRAG_MIME, JSON.stringify(draggedAssets));
+    event.dataTransfer.effectAllowed = "copyMove";
+
+    if (hasDesktopBridge) {
+      getBridge().startAssetDrag(asset.absolutePath);
+    }
+  };
+
+  const renderBoardCard = (board: Board, compact = false) => {
+    const childCount = library?.boards.filter((candidate) => getParentBoardId(candidate.id) === board.id).length ?? 0;
+    const countParts = [`${board.imageCount} image${board.imageCount === 1 ? "" : "s"}`, childCount > 0 ? `${childCount} folder${childCount === 1 ? "" : "s"}` : ""].filter(Boolean);
+
+    return (
+      <button
+        key={board.id}
+        className={`board-tile board-tile-album ${selectedBoard?.id === board.id ? "selected" : ""} ${dragTargetBoardId === board.id ? "drop-target" : ""} ${
+          compact ? "board-tile-compact" : ""
+        }`}
+        onClick={() => setSelectedBoardId(board.id)}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragTargetBoardId(board.id);
+        }}
+        onDragLeave={() => setDragTargetBoardId((current) => (current === board.id ? null : current))}
+        onDrop={(event) => void handleBoardDrop(event, board.id)}
+      >
+        {board.previewAsset ? (
+          <img src={boardPreviewSrcs[board.id] ?? `file://${board.previewAsset.thumbnailPath ?? board.previewAsset.absolutePath}`} alt="" />
+        ) : null}
+        <span className="board-overlay" />
+        <span className="board-copy">
+          <strong>{board.title}</strong>
+          {countParts.length > 0 ? <small>{countParts.join(" · ")}</small> : null}
+        </span>
+      </button>
+    );
+  };
+
+  if (!library) {
+    return (
+      <main className="empty-shell">
+        <div className="empty-glow empty-glow-left" />
+        <div className="empty-glow empty-glow-right" />
+        <section className="empty-card">
+          <p className="eyebrow">Moss</p>
+          <h1>Your offline visual library.</h1>
+          <p className="lede">Browse folders like moodboards, keep everything local, and move images around without leaving the filesystem.</p>
+          <div className="welcome-actions">
+            <button className="primary-button" onClick={() => void pickFolder()} disabled={isPicking}>
+              {isPicking ? "Opening…" : "Choose Folder"}
+            </button>
+            <button className="ghost-button" onClick={() => void openFolderPath(devDefaultFolder)}>
+              Open Moodboards
+            </button>
+          </div>
+          <div className="path-entry">
+            <input
+              className="path-input"
+              value={manualFolderPath}
+              onChange={(event) => setManualFolderPath(event.target.value)}
+              placeholder="/path/to/your/moodboards"
+            />
+            <button className="ghost-button" onClick={() => void openCurrentPathInput()}>
+              Open Path
+            </button>
+          </div>
+          {appState.recentVaults.length > 0 ? (
+            <div className="recent-vaults">
+              <p className="recent-title">Recent folders</p>
+              <div className="recent-list">
+                {appState.recentVaults.map((rootPath) => (
+                  <button key={rootPath} className="recent-chip" onClick={() => void openFolderPath(rootPath)}>
+                    {rootPath}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-top">
+          <h1>Moss.</h1>
+        </div>
+
+        <nav className="board-list">{rootBoards.map((board) => renderBoardCard(board))}</nav>
+
+        <div className="sidebar-footer">
+          <button className="settings-button" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </button>
+        </div>
+      </aside>
+
+      <section
+        className="canvas"
+        onDragOver={(event) => {
+          if (selectedBoard) {
+            event.preventDefault();
+          }
+        }}
+        onDrop={(event) => {
+          if (selectedBoard) {
+            void handleBoardDrop(event, selectedBoard.id);
+          }
+        }}
+      >
+        {selectedBoard ? (
+          <>
+            <header className="board-header">
+              <div>
+                <h2>{selectedBoard.title}</h2>
+                <p className="board-meta">{selectedBoard.imageCount === 0 ? "" : `${selectedBoard.imageCount} images`}</p>
+              </div>
+              <div className="board-actions">
+                <button className={`ghost-button ${selectionMode ? "active-toggle" : ""}`} onClick={toggleSelectionMode}>
+                  {selectionMode ? "Done" : "Select"}
+                </button>
+              </div>
+            </header>
+
+            {selectionMode ? (
+              <section className="selection-bar">
+                <span>{selectedAssetIds.length} selected</span>
+                <select value={moveTargetBoardId} onChange={(event) => setMoveTargetBoardId(event.target.value)}>
+                  <option value="">Move to…</option>
+                  {moveTargets.map((board) => (
+                    <option key={board.id} value={board.id}>
+                      {board.title}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="ghost-button"
+                  onClick={() => void performMoveSelected()}
+                  disabled={!moveTargetBoardId || selectedAssetIds.length === 0 || isMutatingAssets}
+                >
+                  {isMutatingAssets ? "Working…" : "Move"}
+                </button>
+                <button
+                  className="ghost-button danger-button"
+                  onClick={() => void performDeleteSelected()}
+                  disabled={selectedAssetIds.length === 0 || isMutatingAssets}
+                >
+                  {isMutatingAssets ? "Working…" : "Delete"}
+                </button>
+              </section>
+            ) : null}
+
+            {statusMessage ? <p className="status-copy">{statusMessage}</p> : null}
+            {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
+
+            {childBoards.length > 0 ? (
+              <section className="child-board-section">
+                <div className="child-board-header">
+                  <h3>Folders</h3>
+                </div>
+                <div className="child-board-grid">{childBoards.map((board) => renderBoardCard(board, true))}</div>
+              </section>
+            ) : null}
+
+            {boardInitialLoading ? (
+              <div className="board-loading">
+                <div className="spinner" />
+                <span>Loading…</span>
+              </div>
+            ) : null}
+
+            <div className="masonry-grid">
+              {selectedBoard.assets.map((asset) => {
+                const isSelected = selectedAssetIds.includes(asset.id);
+
+                return (
+                  <button
+                    key={asset.id}
+                    className={`asset-card ${isSelected ? "selected" : ""}`}
+                    data-asset-id={asset.id}
+                    onClick={() => openAsset(asset.id)}
+                    onPointerDown={(event) => startLongPress(event, asset)}
+                    onPointerUp={clearLongPress}
+                    onPointerLeave={clearLongPress}
+                    onPointerCancel={clearLongPress}
+                    draggable
+                    onDragStart={(event) => handleAssetDragStart(event, asset)}
+                  >
+                    {!assetPreviewLoaded[asset.id] ? (
+                      <div className="asset-loading">
+                        <div className="spinner spinner-small" />
+                      </div>
+                    ) : null}
+                    {visibleAssetIds.includes(asset.id) ? (
+                      <img
+                        className={assetPreviewLoaded[asset.id] ? "" : "asset-image-loading"}
+                        src={assetPreviewSrcs[asset.id] ?? `file://${asset.thumbnailPath ?? asset.absolutePath}`}
+                        alt={asset.name}
+                        loading="lazy"
+                        onLoad={() =>
+                          setAssetPreviewLoaded((current) => ({
+                            ...current,
+                            [asset.id]: true
+                          }))
+                        }
+                        onError={() =>
+                          setAssetPreviewLoaded((current) => ({
+                            ...current,
+                            [asset.id]: true
+                          }))
+                        }
+                      />
+                    ) : null}
+                    <button
+                      className={`asset-star-button ${asset.starred ? "starred" : ""}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void toggleStarAsset(asset);
+                      }}
+                      aria-label={asset.starred ? "Unstar image" : "Star image"}
+                    >
+                      ★
+                    </button>
+                    <span className="asset-sheen" />
+                    {selectionMode ? <span className="asset-selection-badge">{isSelected ? "Selected" : "Select"}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <div className="empty-board">No folders with images yet.</div>
+        )}
+      </section>
+
+      {selectedAsset && selectedBoard ? (
+        <div className="viewer-backdrop" onClick={() => setViewer(null)}>
+          <div className="viewer-shell" onClick={(event) => event.stopPropagation()}>
+            <button className="viewer-nav viewer-nav-left" onClick={() => stepViewer(-1)}>
+              ‹
+            </button>
+            <div className="viewer-image-wrap">
+              {viewerImageLoading ? (
+                <div className="viewer-loading">
+                  <div
+                    className="viewer-loading-thumb"
+                    style={{
+                      backgroundImage: `url(${assetPreviewSrcs[selectedAsset.id] ?? ""})`
+                    }}
+                  />
+                  <div className="spinner" />
+                </div>
+              ) : null}
+              <img
+                className={`viewer-image ${viewerImageLoading ? "is-loading" : ""}`}
+                src={viewerImageSrc ?? ""}
+                alt={selectedAsset.name}
+                onLoad={(event) => {
+                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                  if (!naturalWidth || !naturalHeight) {
+                    return;
+                  }
+
+                  setViewerImageLoading(false);
+                  setCropFrameSize({
+                    width: Math.max(event.currentTarget.clientWidth, 1),
+                    height: Math.max(event.currentTarget.clientHeight, 1)
+                  });
+                  setAssetDimensions((current) => ({
+                    ...current,
+                    [selectedAsset.id]: { width: naturalWidth, height: naturalHeight }
+                  }));
+                }}
+                onError={() => setViewerImageLoading(false)}
+              />
+            </div>
+            <button className="viewer-nav viewer-nav-right" onClick={() => stepViewer(1)}>
+              ›
+            </button>
+
+            <div className="viewer-toolbar">
+              <button className={`icon-button ${cropMode ? "active" : ""}`} onClick={() => setCropMode((current) => !current)} aria-label="Crop">
+                ⛶
+              </button>
+              <button className={`icon-button ${showInfo ? "active" : ""}`} onClick={() => setShowInfo((current) => !current)}>
+                i
+              </button>
+              <button className="icon-button" onClick={() => setViewer(null)}>
+                ×
+              </button>
+            </div>
+
+            {cropMode && selectedAssetDimensions ? (
+              <div className="crop-toolbar">
+                <button className="ghost-button" onClick={() => setCropMode(false)}>
+                  Cancel
+                </button>
+                <button className="primary-button" onClick={() => void saveCrop()} disabled={savingCrop}>
+                  {savingCrop ? "Saving…" : "Save Crop"}
+                </button>
+              </div>
+            ) : null}
+
+            {cropMode && !viewerImageLoading ? (
+              <div className="crop-overlay">
+                <div
+                  className="crop-rect"
+                  style={{
+                    left: `calc(50% - ${cropFrameSize.width / 2}px + ${cropRect.x * cropFrameSize.width}px)`,
+                    top: `calc(50% - ${cropFrameSize.height / 2}px + ${cropRect.y * cropFrameSize.height}px)`,
+                    width: `${cropRect.width * cropFrameSize.width}px`,
+                    height: `${cropRect.height * cropFrameSize.height}px`
+                  }}
+                >
+                  <div className="crop-move" onPointerDown={(event) => startCropInteraction("move", event)} />
+                  {(["n", "s", "e", "w", "nw", "ne", "sw", "se"] as CropHandle[]).map((handle) => (
+                    <button
+                      key={handle}
+                      className={`crop-handle crop-handle-${handle}`}
+                      onPointerDown={(event) => startCropInteraction(handle, event)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {showInfo ? (
+              <aside className="info-panel">
+                <p className="eyebrow">Details</p>
+                <h3>{selectedAsset.name}</h3>
+                <dl>
+                  <div>
+                    <dt>Folder</dt>
+                    <dd>{selectedBoard.title}</dd>
+                  </div>
+                  <div>
+                    <dt>Path</dt>
+                    <dd>{selectedAsset.relativePath}</dd>
+                  </div>
+                  <div>
+                    <dt>Size</dt>
+                    <dd>{formatBytes(selectedAsset.size)}</dd>
+                  </div>
+                  <div>
+                    <dt>Modified</dt>
+                    <dd>{formatDate(selectedAsset.modifiedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Dimensions</dt>
+                    <dd>{selectedAssetDimensions ? `${selectedAssetDimensions.width} × ${selectedAssetDimensions.height}` : "Loading…"}</dd>
+                  </div>
+                </dl>
+              </aside>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <div className="settings-backdrop" onClick={() => setSettingsOpen(false)}>
+          <section className="settings-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="settings-head">
+              <h3>Settings</h3>
+              <button className="icon-button" onClick={() => setSettingsOpen(false)}>
+                ×
+              </button>
+            </div>
+            <p className="subtle">Choose the folder Moss should use for your moodboards.</p>
+            <div className="settings-theme-row">
+              <button className={`theme-chip ${theme === "dark" ? "active" : ""}`} onClick={() => void updateTheme("dark")}>
+                Dark
+              </button>
+              <button className={`theme-chip ${theme === "light" ? "active" : ""}`} onClick={() => void updateTheme("light")}>
+                Light
+              </button>
+            </div>
+            <div className="path-entry">
+              <input
+                className="path-input"
+                value={manualFolderPath}
+                onChange={(event) => setManualFolderPath(event.target.value)}
+                placeholder="/path/to/your/moodboards"
+              />
+              <button className="ghost-button" onClick={() => void openCurrentPathInput()}>
+                Open Path
+              </button>
+            </div>
+            <div className="settings-actions">
+              <button className="primary-button" onClick={() => void pickFolder()} disabled={isPicking}>
+                {isPicking ? "Opening…" : "Choose Folder"}
+              </button>
+            </div>
+            {appState.recentVaults.length > 0 ? (
+              <div className="recent-vaults">
+                <p className="recent-title">Recent folders</p>
+                <div className="recent-list">
+                  {appState.recentVaults.map((rootPath) => (
+                    <button key={rootPath} className="recent-chip" onClick={() => void openFolderPath(rootPath)}>
+                      {rootPath}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
+          </section>
+        </div>
+      ) : null}
+
+      {assetActionMenu && selectedBoard ? (
+        <div className="asset-action-menu" style={{ left: assetActionMenu.x, top: assetActionMenu.y }}>
+          <button className="ghost-button danger-button" onClick={() => void performDeleteSingle(assetActionMenu.assetId)}>
+            Delete
+          </button>
+          <select defaultValue="" onChange={(event) => void performMoveSingle(assetActionMenu.assetId, event.target.value)}>
+            <option value="">Move to…</option>
+            {moveTargets.map((board) => (
+              <option key={board.id} value={board.id}>
+                {board.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+    </main>
+  );
+}
+
+export default App;
