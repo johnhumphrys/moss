@@ -343,6 +343,7 @@ function App() {
     elements.forEach((element) => observer.observe(element));
 
     return () => observer.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBoard?.id]);
 
   useEffect(() => {
