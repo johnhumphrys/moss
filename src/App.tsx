@@ -35,6 +35,8 @@ function App() {
   const [appState, setAppState] = useState<AppState>({ recentVaults: [] });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'single'; assetId: string } | { type: 'bulk' } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [isMutatingAssets, setIsMutatingAssets] = useState(false);
   const [assetDimensions, setAssetDimensions] = useState<Record<string, { width: number; height: number }>>({});
   const [assetPreviewSrcs, setAssetPreviewSrcs] = useState<Record<string, string>>({});
@@ -109,6 +111,12 @@ function App() {
     () => selectedBoard?.assets.reduce((sum, asset) => sum + asset.size, 0) ?? 0,
     [selectedBoard]
   );
+
+  useEffect(() => {
+    if (!statusMessage) return;
+    const timer = setTimeout(() => setStatusMessage(null), 3000);
+    return () => clearTimeout(timer);
+  }, [statusMessage]);
 
   useEffect(() => {
     const loadAppState = async () => {
@@ -698,6 +706,7 @@ function App() {
     try {
       const nextLibrary = await getBridge().moveAssets(library.rootPath, boardId, [asset.absolutePath]);
       loadLibrary(nextLibrary);
+      setSelectedBoardId(boardId);
       setStatusMessage(`Moved ${asset.name}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not move the image.";
@@ -830,6 +839,7 @@ function App() {
       const assetPaths = JSON.parse(internalData) as string[];
       const nextLibrary = await getBridge().moveAssets(library.rootPath, targetBoardId, assetPaths);
       loadLibrary(nextLibrary);
+      setSelectedBoardId(targetBoardId);
       return;
     }
 
@@ -847,6 +857,11 @@ function App() {
 
     event.dataTransfer.setData(INTERNAL_DRAG_MIME, JSON.stringify(draggedAssets));
     event.dataTransfer.effectAllowed = "copyMove";
+    setIsDragging(true);
+  };
+
+  const handleAssetDragEnd = () => {
+    setIsDragging(false);
   };
 
   const renderMiniBoardItem = (board: Board) => {
@@ -855,8 +870,15 @@ function App() {
     return (
       <button
         key={board.id}
-        className={`mini-board-item ${selectedBoard?.id === board.id ? "selected" : ""}`}
+        className={`mini-board-item ${selectedBoard?.id === board.id ? "selected" : ""} ${dragTargetBoardId === board.id ? "drop-target" : ""}`}
         onClick={() => setSelectedBoardId(board.id)}
+        onDragOver={(event) => {
+          if (board.synthetic || board.id === selectedBoard?.id) return;
+          event.preventDefault();
+          setDragTargetBoardId(board.id);
+        }}
+        onDragLeave={() => setDragTargetBoardId((current) => (current === board.id ? null : current))}
+        onDrop={(event) => void handleBoardDrop(event, board.id)}
       >
         <span className="mini-board-row">
           <span className="mini-board-cover">
@@ -913,6 +935,7 @@ function App() {
   if (!library) {
     return (
       <>
+        <div className="titlebar" />
         {isInitialLoading ? (
           <div className="loading-overlay">
             <div className="loading-overlay-inner">
@@ -968,6 +991,7 @@ function App() {
 
   return (
     <>
+    <div className="titlebar" />
     {boardInitialLoading ? (
       <div className="loading-overlay">
         <div className="loading-overlay-inner">
@@ -976,9 +1000,9 @@ function App() {
         </div>
       </div>
     ) : null}
-    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
-        {!sidebarCollapsed && (
+    <main className={`app-shell ${sidebarCollapsed && !isDragging ? "sidebar-collapsed" : ""}`}>
+      <aside className={`sidebar ${sidebarCollapsed && !isDragging ? "collapsed" : ""}`}>
+        {(!sidebarCollapsed || isDragging) && (
           <>
             <div className="sidebar-top">
               <h1>Moss.</h1>
@@ -1010,14 +1034,14 @@ function App() {
           </button>
         </div>
 
-        {sidebarCollapsed && (
+        {sidebarCollapsed && !isDragging && (
           <div className="sidebar-peek">
             <div className="sidebar-peek-head">
               <span className="sidebar-peek-title">Moss.</span>
             </div>
             <nav className="sidebar-peek-list">
               {rootBoards.map(renderMiniBoardItem)}
-              <button className="mini-board-item mini-board-new" onClick={() => openCreateAlbumDialog(null)}>
+              <button className="mini-board-item mini-board-new" onClick={() => openCreateAlbumDialog(null)} aria-label="New album">
                 <span className="mini-board-cover mini-board-cover-new">+</span>
                 <span className="mini-board-title">New album</span>
               </button>
@@ -1089,30 +1113,25 @@ function App() {
                   ) : null}
                 </div>
               </div>
-              {selectionMode ? (
-                <div className="board-actions">
-                  <button className="ghost-button active-toggle" onClick={toggleSelectionMode}>
-                    Done
-                  </button>
-                </div>
-              ) : null}
             </header>
 
             {selectionMode ? (
               <section className="selection-bar">
                 <span>{selectedAssetIds.length} selected</span>
-                <span className="selection-hint">Drag the selected images onto an album to move them.</span>
+                <span className="selection-hint">Drag images onto an album to move them.</span>
                 <button
                   className="ghost-button danger-button"
-                  onClick={() => void performDeleteSelected()}
+                  onClick={() => setDeleteConfirm({ type: 'bulk' })}
                   disabled={selectedAssetIds.length === 0 || isMutatingAssets}
                 >
-                  {isMutatingAssets ? "Working…" : "Delete"}
+                  {isMutatingAssets ? "Deleting…" : "Delete"}
+                </button>
+                <button className="ghost-button active-toggle" onClick={toggleSelectionMode}>
+                  Done
                 </button>
               </section>
             ) : null}
 
-            {statusMessage ? <p className="status-copy">{statusMessage}</p> : null}
             {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
 
             {!selectedBoard.synthetic && childBoards.length > 0 ? (
@@ -1140,6 +1159,7 @@ function App() {
                     onPointerCancel={clearLongPress}
                     draggable
                     onDragStart={(event) => handleAssetDragStart(event, asset)}
+                    onDragEnd={handleAssetDragEnd}
                   >
                     {!assetPreviewLoaded[asset.id] ? (
                       <div className="asset-loading">
@@ -1270,7 +1290,7 @@ function App() {
               </button>
               <button
                 className="icon-button viewer-delete-button"
-                onClick={() => void performDeleteSingle(selectedAsset.id)}
+                onClick={() => setDeleteConfirm({ type: 'single', assetId: selectedAsset.id })}
                 disabled={isMutatingAssets}
                 aria-label="Delete image"
                 title="Delete image"
@@ -1442,7 +1462,7 @@ function App() {
 
       {assetActionMenu && selectedBoard ? (
         <div className="asset-action-menu" style={{ left: assetActionMenu.x, top: assetActionMenu.y }}>
-          <button className="ghost-button danger-button" onClick={() => void performDeleteSingle(assetActionMenu.assetId)}>
+          <button className="ghost-button danger-button" onClick={() => setDeleteConfirm({ type: 'single', assetId: assetActionMenu.assetId })}>
             Delete
           </button>
           <select defaultValue="" onChange={(event) => void performMoveSingle(assetActionMenu.assetId, event.target.value)}>
@@ -1457,6 +1477,32 @@ function App() {
       ) : null}
     </main>
     {albumInfoOpen ? <div className="album-info-backdrop" onClick={() => setAlbumInfoOpen(false)} /> : null}
+
+    {statusMessage ? <div className="toast-notification">{statusMessage}</div> : null}
+
+    {deleteConfirm ? (
+      <div className="settings-backdrop" onClick={() => setDeleteConfirm(null)}>
+        <section className="settings-modal" style={{ maxWidth: 340 }} onClick={(e) => e.stopPropagation()}>
+          <header className="settings-header">
+            <h3>Delete {deleteConfirm.type === 'bulk' ? `${selectedAssets.length} image${selectedAssets.length === 1 ? '' : 's'}` : 'image'}?</h3>
+          </header>
+          <p style={{ margin: '0 0 1.5rem', color: 'var(--muted)', fontSize: '0.875rem' }}>This cannot be undone.</p>
+          <div className="settings-actions">
+            <button className="ghost-button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
+            <button
+              className="ghost-button danger-button"
+              onClick={() => {
+                if (deleteConfirm.type === 'single') void performDeleteSingle(deleteConfirm.assetId);
+                else void performDeleteSelected();
+                setDeleteConfirm(null);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        </section>
+      </div>
+    ) : null}
     </>
   );
 }

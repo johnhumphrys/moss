@@ -49,6 +49,19 @@ body {
   user-select: none;
 }
 
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  z-index: 200;
+  -webkit-app-region: drag;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(26px);
+}
+
 button,
 input,
 select {
@@ -89,7 +102,8 @@ select {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 100vh;
+  min-height: calc(100vh - 38px);
+  margin-top: 38px;
   overflow: hidden;
   padding: 32px;
 }
@@ -227,15 +241,32 @@ select {
   color: var(--danger);
 }
 
-.status-copy {
-  color: var(--muted);
+.toast-notification {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-raised, #333);
+  color: var(--text, #fff);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  pointer-events: none;
+  z-index: 9999;
+  animation: toast-in 0.15s ease;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
 .app-shell {
   display: grid;
   grid-template-columns: 340px 1fr;
   grid-template-rows: 1fr;
-  height: 100vh;
+  height: calc(100vh - 38px);
+  margin-top: 38px;
   transition: grid-template-columns 220ms ease;
 }
 
@@ -248,7 +279,7 @@ select {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: calc(100vh - 38px);
   overflow: hidden;
   padding: 22px;
   border-right: 1px solid var(--line);
@@ -575,8 +606,8 @@ select {
 }
 
 .canvas {
-  height: 100vh;
-  padding: 28px;
+  height: calc(100vh - 38px);
+  padding: 28px 28px 10px;
   overflow-y: auto;
 }
 
@@ -688,12 +719,19 @@ select {
 }
 
 .selection-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
   align-items: center;
-  margin-bottom: 20px;
-  padding: 12px 14px;
+  padding: 10px 16px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 999px;
   background: var(--panel);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
 }
 
 .selection-hint {
@@ -969,7 +1007,7 @@ select {
 
 .viewer-toolbar {
   position: fixed;
-  top: 24px;
+  top: 50px;
   right: 24px;
   z-index: 16;
   display: flex;
