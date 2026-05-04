@@ -1,4 +1,15 @@
-import { DragEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { buildCreateAlbumDialog, buildRenameAlbumDialog, normalizeAlbumNameInput, type AlbumDialogState } from "./lib/album-dialog";
+import {
+  extractDroppedFilePaths,
+  getBoardCoverAssets,
+  getDraggedAssetPaths,
+  getInitialVisibleAssetIds,
+  isBoardInitialLoading,
+  toggleSelectedAssetIds
+} from "./lib/asset-utils";
+import { buildBoardCountParts, getParentBoardId, isTopLevelBoard } from "./lib/board-utils";
+import { formatBytes, formatDate } from "./lib/formatters";
 
 type ViewerState = {
   boardId: string;
@@ -9,47 +20,14 @@ type CropHandle = "move" | "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
 
 const INTERNAL_DRAG_MIME = "application/x-moss-asset-paths";
 
-const formatBytes = (size: number) => {
-  if (size === 0) {
-    return "0 B";
-  }
-
-  const units = ["B", "KB", "MB", "GB"];
-  const index = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1);
-  const value = size / 1024 ** index;
-  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
-};
-
-const formatDate = (value: string) =>
-  new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
-
 const getBridge = () => window.moss;
-
-const getParentBoardId = (boardId: string) => {
-  const segments = boardId.split("/");
-  if (segments.length <= 1) {
-    return null;
-  }
-
-  return segments.slice(0, -1).join("/");
-};
-
-const isTopLevelBoard = (boardId: string) => !boardId.includes("/");
-
-const extractDroppedFilePaths = (event: DragEvent) =>
-  Array.from(event.dataTransfer.files)
-    .map((file) => (file as File & { path?: string }).path)
-    .filter((value): value is string => Boolean(value));
 
 function App() {
   const devDefaultFolder = "/Users/johnhumphrys/Documents/Moodboards";
   const [library, setLibrary] = useState<VaultData | null>(null);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<ViewerState | null>(null);
-  const [showInfo, setShowInfo] = useState(true);
+  const [showInfo, setShowInfo] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [isPicking, setIsPicking] = useState(false);
   const [manualFolderPath, setManualFolderPath] = useState(devDefaultFolder);
@@ -71,9 +49,11 @@ function App() {
   const [assetActionMenu, setAssetActionMenu] = useState<{ assetId: string; x: number; y: number } | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
-  const [moveTargetBoardId, setMoveTargetBoardId] = useState("");
   const [dragTargetBoardId, setDragTargetBoardId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [albumDialog, setAlbumDialog] = useState<AlbumDialogState | null>(null);
+  const [albumNameInput, setAlbumNameInput] = useState("");
+  const [isSavingAlbum, setIsSavingAlbum] = useState(false);
   const hasDesktopBridge = typeof getBridge() !== "undefined";
   const longPressTimerRef = useRef<number | null>(null);
   const cropDragRef = useRef<{
@@ -118,9 +98,7 @@ function App() {
     [selectedAssetIds, selectedBoard]
   );
 
-  const boardInitialLoading = Boolean(
-    selectedBoard && selectedBoard.assets.length > 0 && visibleAssetIds.some((assetId) => !assetPreviewLoaded[assetId])
-  );
+  const boardInitialLoading = isBoardInitialLoading(selectedBoard, visibleAssetIds, assetPreviewLoaded);
 
   useEffect(() => {
     const loadAppState = async () => {
@@ -209,6 +187,7 @@ function App() {
       }
 
       const boardsToPreview = [...rootBoards, ...childBoards];
+      const coverAssets = boardsToPreview.flatMap((board) => getBoardCoverAssets(board));
       const nextPreviewEntries = await Promise.all(
         boardsToPreview.map(async (board) => {
           if (!board.previewAsset) {
@@ -228,10 +207,24 @@ function App() {
           }
         })
       );
+      const nextCoverEntries = await Promise.all(
+        coverAssets.map(async (asset) => {
+          try {
+            const payload = await getBridge().loadPreviewAsset(asset.absolutePath, asset.relativePath, asset.modifiedAt, asset.size);
+            return [asset.id, payload.dataUrl] as const;
+          } catch {
+            return [asset.id, `file://${asset.thumbnailPath ?? asset.absolutePath}`] as const;
+          }
+        })
+      );
 
       setBoardPreviewSrcs((current) => ({
         ...current,
         ...Object.fromEntries(nextPreviewEntries.filter(([, src]) => src))
+      }));
+      setAssetPreviewSrcs((current) => ({
+        ...current,
+        ...Object.fromEntries(nextCoverEntries)
       }));
     };
 
@@ -283,7 +276,7 @@ function App() {
     }
 
     setAssetPreviewLoaded({});
-    setVisibleAssetIds(selectedBoard.assets.slice(0, 12).map((asset) => asset.id));
+    setVisibleAssetIds(getInitialVisibleAssetIds(selectedBoard.assets));
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -327,7 +320,7 @@ function App() {
       } else if (event.key === "ArrowLeft" && currentIndex > 0) {
         setViewer({ boardId: selectedBoard.id, assetId: selectedBoard.assets[currentIndex - 1].id });
       } else if (event.key.toLowerCase() === "i") {
-        setShowInfo((current) => !current);
+        toggleViewerInfoFromKeyboard();
       }
     };
 
@@ -335,23 +328,23 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedBoard, viewer]);
 
-  const loadLibrary = (nextLibrary: VaultData, options?: { preserveCaches?: boolean }) => {
+  function loadLibrary(nextLibrary: VaultData, options?: { preserveCaches?: boolean }) {
     setLibrary(nextLibrary);
     setTheme(nextLibrary.theme ?? "dark");
+    setShowInfo(nextLibrary.viewerInfoOpen ?? false);
     setSelectedBoardId((current) =>
       nextLibrary.boards.some((board) => board.id === current) ? current : nextLibrary.boards[0]?.id ?? null
     );
     setViewer(null);
     setSelectionMode(false);
     setSelectedAssetIds([]);
-    setMoveTargetBoardId("");
     if (!options?.preserveCaches) {
       setAssetPreviewSrcs({});
       setAssetPreviewLoaded({});
       setBoardPreviewSrcs({});
       setVisibleAssetIds([]);
     }
-  };
+  }
 
   const refreshAppState = async () => {
     if (!hasDesktopBridge) {
@@ -420,6 +413,79 @@ function App() {
     }
   };
 
+  async function updateShowInfo(nextShowInfo: boolean) {
+    setShowInfo(nextShowInfo);
+    if (library && hasDesktopBridge) {
+      await getBridge().persistViewerInfo(library.rootPath, nextShowInfo);
+    }
+  }
+
+  const toggleViewerInfoFromKeyboard = useEffectEvent(() => {
+    void updateShowInfo(!showInfo);
+  });
+
+  const openCreateAlbumDialog = (parentBoardId: string | null) => {
+    setAlbumDialog(buildCreateAlbumDialog(parentBoardId));
+    setAlbumNameInput("");
+  };
+
+  const openRenameAlbumDialog = (board: Board) => {
+    const dialog = buildRenameAlbumDialog(board);
+    if (!dialog) {
+      return;
+    }
+
+    setAlbumDialog(dialog);
+    setAlbumNameInput(board.title);
+  };
+
+  const closeAlbumDialog = () => {
+    if (isSavingAlbum) {
+      return;
+    }
+
+    setAlbumDialog(null);
+    setAlbumNameInput("");
+  };
+
+  const submitAlbumDialog = async () => {
+    if (!library || !hasDesktopBridge || !albumDialog) {
+      return;
+    }
+
+    const nextName = normalizeAlbumNameInput(albumNameInput);
+    if (!nextName) {
+      setErrorMessage("Album name cannot be empty.");
+      return;
+    }
+
+    setIsSavingAlbum(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      if (albumDialog.mode === "create") {
+        const result = await getBridge().createBoard(library.rootPath, albumDialog.parentBoardId, nextName);
+        loadLibrary(result.vault);
+        setSelectedBoardId(result.boardId);
+        setStatusMessage(`Created ${nextName}.`);
+      } else {
+        const result = await getBridge().renameBoard(library.rootPath, albumDialog.boardId, nextName);
+        loadLibrary(result.vault);
+        setSelectedBoardId(result.boardId);
+        setStatusMessage(`Renamed album to ${nextName}.`);
+      }
+
+      setAlbumDialog(null);
+      setAlbumNameInput("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save the album.";
+      setErrorMessage(message);
+    } finally {
+      setIsSavingAlbum(false);
+    }
+  };
+
   const toggleStarAsset = async (asset: Asset) => {
     if (!library || !hasDesktopBridge) {
       return;
@@ -447,13 +513,15 @@ function App() {
   const toggleSelectionMode = () => {
     setSelectionMode((current) => !current);
     setSelectedAssetIds([]);
-    setMoveTargetBoardId("");
+  };
+
+  const enterSelectionModeForAsset = (assetId: string) => {
+    setSelectionMode(true);
+    setSelectedAssetIds([assetId]);
   };
 
   const toggleAssetSelection = (assetId: string) => {
-    setSelectedAssetIds((current) =>
-      current.includes(assetId) ? current.filter((value) => value !== assetId) : [...current, assetId]
-    );
+    setSelectedAssetIds((current) => toggleSelectedAssetIds(current, assetId));
   };
 
   const openAsset = (assetId: string) => {
@@ -469,7 +537,14 @@ function App() {
     setViewer({ boardId: selectedBoard.id, assetId });
   };
 
-  const startLongPress = (event: ReactPointerEvent<HTMLButtonElement>, asset: Asset) => {
+  const handleAssetCardKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>, assetId: string) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openAsset(assetId);
+    }
+  };
+
+  const startLongPress = (event: ReactPointerEvent<HTMLElement>, asset: Asset) => {
     if (selectionMode) {
       return;
     }
@@ -662,36 +737,11 @@ function App() {
     }
   };
 
-  const performMoveSelected = async () => {
-    if (!library || selectedAssets.length === 0 || !moveTargetBoardId || !hasDesktopBridge) {
-      return;
-    }
-
-    setIsMutatingAssets(true);
-    setErrorMessage(null);
-    setStatusMessage(null);
-
-    try {
-      const nextLibrary = await getBridge().moveAssets(
-        library.rootPath,
-        moveTargetBoardId,
-        selectedAssets.map((asset) => asset.absolutePath)
-      );
-      loadLibrary(nextLibrary);
-      setStatusMessage(`Moved ${selectedAssets.length} image${selectedAssets.length === 1 ? "" : "s"}.`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not move the selected images.";
-      setErrorMessage(message);
-    } finally {
-      setIsMutatingAssets(false);
-    }
-  };
-
   const handleBoardDrop = async (event: DragEvent, targetBoardId: string) => {
     event.preventDefault();
     setDragTargetBoardId(null);
 
-    if (!library || !hasDesktopBridge) {
+    if (!library || !hasDesktopBridge || targetBoardId === "__starred__") {
       return;
     }
 
@@ -713,20 +763,16 @@ function App() {
   };
 
   const handleAssetDragStart = (event: DragEvent, asset: Asset) => {
-    const draggedAssets =
-      selectionMode && selectedAssetIds.includes(asset.id) ? selectedAssets.map((currentAsset) => currentAsset.absolutePath) : [asset.absolutePath];
+    const draggedAssets = getDraggedAssetPaths(selectionMode, selectedAssetIds, selectedAssets, asset);
 
     event.dataTransfer.setData(INTERNAL_DRAG_MIME, JSON.stringify(draggedAssets));
     event.dataTransfer.effectAllowed = "copyMove";
-
-    if (hasDesktopBridge) {
-      getBridge().startAssetDrag(asset.absolutePath);
-    }
   };
 
   const renderBoardCard = (board: Board, compact = false) => {
     const childCount = library?.boards.filter((candidate) => getParentBoardId(candidate.id) === board.id).length ?? 0;
-    const countParts = [`${board.imageCount} image${board.imageCount === 1 ? "" : "s"}`, childCount > 0 ? `${childCount} folder${childCount === 1 ? "" : "s"}` : ""].filter(Boolean);
+    const countParts = buildBoardCountParts(board.imageCount, childCount);
+    const coverAssets = getBoardCoverAssets(board);
 
     return (
       <button
@@ -736,17 +782,31 @@ function App() {
         }`}
         onClick={() => setSelectedBoardId(board.id)}
         onDragOver={(event) => {
+          if (board.synthetic) {
+            return;
+          }
           event.preventDefault();
           setDragTargetBoardId(board.id);
         }}
         onDragLeave={() => setDragTargetBoardId((current) => (current === board.id ? null : current))}
         onDrop={(event) => void handleBoardDrop(event, board.id)}
       >
-        {board.previewAsset ? (
-          <img src={boardPreviewSrcs[board.id] ?? `file://${board.previewAsset.thumbnailPath ?? board.previewAsset.absolutePath}`} alt="" />
-        ) : null}
-        <span className="board-overlay" />
-        <span className="board-copy">
+        <span className={`board-cover-collage board-cover-count-${Math.min(Math.max(coverAssets.length, 1), 3)}`}>
+          {coverAssets.map((asset, index) => {
+            const src =
+              assetPreviewSrcs[asset.id] ??
+              boardPreviewSrcs[board.id] ??
+              `file://${asset.thumbnailPath ?? asset.absolutePath}`;
+
+            return (
+              <span key={`${board.id}-${asset.id}`} className={`board-cover-slot board-cover-slot-${index + 1}`}>
+                <img src={src} alt="" />
+              </span>
+            );
+          })}
+          {coverAssets.length === 0 ? <span className="board-cover-empty" /> : null}
+        </span>
+        <span className="board-copy board-copy-below">
           <strong>{board.title}</strong>
           {countParts.length > 0 ? <small>{countParts.join(" · ")}</small> : null}
         </span>
@@ -807,7 +867,15 @@ function App() {
           <h1>Moss.</h1>
         </div>
 
-        <nav className="board-list">{rootBoards.map((board) => renderBoardCard(board))}</nav>
+        <nav className="board-list">
+          {rootBoards.map((board) => renderBoardCard(board))}
+          <button className="board-tile board-tile-template" onClick={() => openCreateAlbumDialog(null)} aria-label="New album">
+            <span className="board-cover-template">+</span>
+            <span className="board-copy board-copy-below">
+              <strong>New album</strong>
+            </span>
+          </button>
+        </nav>
 
         <div className="sidebar-footer">
           <button className="settings-button" onClick={() => setSettingsOpen(true)}>
@@ -832,35 +900,45 @@ function App() {
         {selectedBoard ? (
           <>
             <header className="board-header">
-              <div>
-                <h2>{selectedBoard.title}</h2>
+              <div className="board-title-wrap">
+                <div className="board-title-row">
+                  <h2>{selectedBoard.title}</h2>
+                  {!selectedBoard.synthetic && !selectionMode ? (
+                    <div className="board-title-actions">
+                      <button
+                        className="title-icon-button"
+                        onClick={() => openRenameAlbumDialog(selectedBoard)}
+                        aria-label="Rename album"
+                        title="Rename album"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        className="title-icon-button"
+                        onClick={() => openCreateAlbumDialog(selectedBoard.id)}
+                        aria-label="New sub album"
+                        title="New sub album"
+                      >
+                        +
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <p className="board-meta">{selectedBoard.imageCount === 0 ? "" : `${selectedBoard.imageCount} images`}</p>
               </div>
-              <div className="board-actions">
-                <button className={`ghost-button ${selectionMode ? "active-toggle" : ""}`} onClick={toggleSelectionMode}>
-                  {selectionMode ? "Done" : "Select"}
-                </button>
-              </div>
+              {selectionMode ? (
+                <div className="board-actions">
+                  <button className="ghost-button active-toggle" onClick={toggleSelectionMode}>
+                    Done
+                  </button>
+                </div>
+              ) : null}
             </header>
 
             {selectionMode ? (
               <section className="selection-bar">
                 <span>{selectedAssetIds.length} selected</span>
-                <select value={moveTargetBoardId} onChange={(event) => setMoveTargetBoardId(event.target.value)}>
-                  <option value="">Move to…</option>
-                  {moveTargets.map((board) => (
-                    <option key={board.id} value={board.id}>
-                      {board.title}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="ghost-button"
-                  onClick={() => void performMoveSelected()}
-                  disabled={!moveTargetBoardId || selectedAssetIds.length === 0 || isMutatingAssets}
-                >
-                  {isMutatingAssets ? "Working…" : "Move"}
-                </button>
+                <span className="selection-hint">Drag the selected images onto an album to move them.</span>
                 <button
                   className="ghost-button danger-button"
                   onClick={() => void performDeleteSelected()}
@@ -874,12 +952,12 @@ function App() {
             {statusMessage ? <p className="status-copy">{statusMessage}</p> : null}
             {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
 
-            {childBoards.length > 0 ? (
+            {!selectedBoard.synthetic ? (
               <section className="child-board-section">
                 <div className="child-board-header">
                   <h3>Folders</h3>
                 </div>
-                <div className="child-board-grid">{childBoards.map((board) => renderBoardCard(board, true))}</div>
+                {childBoards.length > 0 ? <div className="child-board-grid">{childBoards.map((board) => renderBoardCard(board, true))}</div> : null}
               </section>
             ) : null}
 
@@ -895,11 +973,14 @@ function App() {
                 const isSelected = selectedAssetIds.includes(asset.id);
 
                 return (
-                  <button
+                  <div
                     key={asset.id}
                     className={`asset-card ${isSelected ? "selected" : ""}`}
                     data-asset-id={asset.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => openAsset(asset.id)}
+                    onKeyDown={(event) => handleAssetCardKeyDown(event, asset.id)}
                     onPointerDown={(event) => startLongPress(event, asset)}
                     onPointerUp={clearLongPress}
                     onPointerLeave={clearLongPress}
@@ -942,9 +1023,22 @@ function App() {
                     >
                       ★
                     </button>
+                    <button
+                      className={`asset-select-button ${selectionMode && isSelected ? "selected" : ""}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (selectionMode) {
+                          toggleAssetSelection(asset.id);
+                        } else {
+                          enterSelectionModeForAsset(asset.id);
+                        }
+                      }}
+                      aria-label={selectionMode && isSelected ? "Deselect image" : "Select image"}
+                    >
+                      {selectionMode && isSelected ? "✓" : "◯"}
+                    </button>
                     <span className="asset-sheen" />
-                    {selectionMode ? <span className="asset-selection-badge">{isSelected ? "Selected" : "Select"}</span> : null}
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -1003,7 +1097,7 @@ function App() {
               <button className={`icon-button ${cropMode ? "active" : ""}`} onClick={() => setCropMode((current) => !current)} aria-label="Crop">
                 ⛶
               </button>
-              <button className={`icon-button ${showInfo ? "active" : ""}`} onClick={() => setShowInfo((current) => !current)}>
+              <button className={`icon-button ${showInfo ? "active" : ""}`} onClick={() => void updateShowInfo(!showInfo)}>
                 i
               </button>
               <button className="icon-button" onClick={() => setViewer(null)}>
@@ -1124,6 +1218,47 @@ function App() {
               </div>
             ) : null}
             {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
+          </section>
+        </div>
+      ) : null}
+
+      {albumDialog ? (
+        <div className="settings-backdrop" onClick={closeAlbumDialog}>
+          <section className="settings-modal album-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="settings-head">
+              <h3>{albumDialog.title}</h3>
+              <button className="icon-button" onClick={closeAlbumDialog} disabled={isSavingAlbum}>
+                ×
+              </button>
+            </div>
+            <p className="subtle">
+              {albumDialog.mode === "create"
+                ? "Moss will create the folder for you and keep it in sync."
+                : "Moss will rename the folder and keep the library in sync."}
+            </p>
+            <div className="path-entry">
+              <input
+                className="path-input"
+                value={albumNameInput}
+                onChange={(event) => setAlbumNameInput(event.target.value)}
+                placeholder="Album name"
+                autoFocus
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitAlbumDialog();
+                  }
+                }}
+              />
+            </div>
+            <div className="settings-actions">
+              <button className="ghost-button" onClick={closeAlbumDialog} disabled={isSavingAlbum}>
+                Cancel
+              </button>
+              <button className="primary-button" onClick={() => void submitAlbumDialog()} disabled={isSavingAlbum}>
+                {isSavingAlbum ? "Saving…" : albumDialog.buttonLabel}
+              </button>
+            </div>
           </section>
         </div>
       ) : null}

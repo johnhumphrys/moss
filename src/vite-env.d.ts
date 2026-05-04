@@ -30,7 +30,13 @@ type VaultData = {
   rootPath: string;
   title: string;
   theme: ThemeMode;
+  viewerInfoOpen: boolean;
   boards: Board[];
+};
+
+type BoardMutationResult = {
+  vault: VaultData;
+  boardId: string;
 };
 
 type AppState = {
@@ -57,6 +63,7 @@ interface Window {
     loadVault: (rootPath: string) => Promise<VaultData>;
     setTheme: (mode: ThemeMode) => Promise<"light" | "dark">;
     persistTheme: (rootPath: string, mode: ThemeMode) => Promise<unknown>;
+    persistViewerInfo: (rootPath: string, isOpen: boolean) => Promise<unknown>;
     getDevVaultPath: () => Promise<string | null>;
     getAppState: () => Promise<AppState>;
     loadOriginalAsset: (assetPath: string) => Promise<AssetPayload>;
@@ -68,6 +75,8 @@ interface Window {
     ) => Promise<AssetPayload>;
     toggleStarAsset: (rootPath: string, relativePath: string) => Promise<VaultData>;
     saveCropAsset: (rootPath: string, assetPath: string, cropRect: CropRect) => Promise<VaultData>;
+    createBoard: (rootPath: string, parentBoardId: string | null, name: string) => Promise<BoardMutationResult>;
+    renameBoard: (rootPath: string, boardId: string, name: string) => Promise<BoardMutationResult>;
     importAssets: (rootPath: string, boardId: string, sourcePaths: string[]) => Promise<VaultData>;
     moveAssets: (rootPath: string, boardId: string, sourcePaths: string[]) => Promise<VaultData>;
     deleteAssets: (rootPath: string, sourcePaths: string[]) => Promise<VaultData>;

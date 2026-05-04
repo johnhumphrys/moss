@@ -1,37 +1,67 @@
 # Moss
 
-Moss is a local-first desktop moodboard for browsing image folders as a visual library. It is designed as a viewing experience, not an editing tool.
+[![CI](https://github.com/johnhumphrys/moss/actions/workflows/ci.yml/badge.svg)](https://github.com/johnhumphrys/moss/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-80%25%2B-brightgreen)
 
-## Current MVP
+Moss is a local-first Electron app for turning ordinary folders into a visual moodboard library. It is designed first as a browsing and curation experience: cinematic albums, fast image viewing, drag-and-drop organization, and a filesystem-native workflow where your content stays in normal directories.
 
-- choose a local folder as a vault
-- discover nested folders as boards automatically
-- browse boards from a cinematic sidebar
-- view a masonry-style image grid
+## Overview
+
+Moss treats a root folder as your visual library. Each folder becomes an album, nested folders become sub-albums, and a hidden `.moss` file stores app metadata like theme, starred assets, and album naming without taking ownership away from the filesystem.
+
+The goal is to feel more like a personal visual workspace than an image editor:
+- browse albums as collage-style covers
 - open images in a focused viewer
-- inspect file details from an info panel
-- switch between dark and light mode
-- persist theme choice to a hidden `.moss` file in the vault root
+- star images and surface them across albums
+- drag images between albums
+- create and rename albums from inside the app
+- keep everything local and human-readable on disk
 
-## Vault Metadata
+## How It Works
 
-Moss reads and writes a `.moss` JSON file in the vault root.
+- The library root is a normal directory on your machine.
+- Albums are normal folders inside that root.
+- Sub-albums are nested folders.
+- Images remain regular files that can still be accessed outside Moss.
+- `.moss` stores Moss-specific metadata in the root folder.
 
-Example:
+Example `.moss`:
 
 ```json
 {
   "version": 1,
-  "title": "My Vault",
   "theme": "dark",
+  "viewerInfoOpen": false,
+  "starredAssets": [
+    "cycling/hero.jpg"
+  ],
   "boards": {
-    "friday-gallery": {
-      "title": "Friday Gallery",
-      "cover": "Friday Gallery/cover.jpg"
+    "cycling": {
+      "title": "Cycling"
     }
   }
 }
 ```
+
+## Stack
+
+- Electron
+- React
+- TypeScript
+- Vite
+- Vitest
+- ESLint
+
+## Quality Gates
+
+The repo is set up to run the following on every push and pull request through GitHub Actions:
+
+- `npm run lint`
+- `npm run test`
+- `npm run test:coverage`
+- `npm run build`
+
+Coverage thresholds are enforced in the repo, with an 80%+ minimum for the covered utility modules and supporting tests across unit, integration, and UI layers.
 
 ## Development
 
@@ -40,8 +70,14 @@ npm install
 npm run dev
 ```
 
-## Build
+## Scripts
 
 ```bash
+npm run lint
+npm run test
+npm run test:unit
+npm run test:int
+npm run test:ui
+npm run test:coverage
 npm run build
 ```

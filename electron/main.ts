@@ -10,6 +10,7 @@ type MossConfig = {
   version: number;
   title?: string;
   theme?: ThemeMode;
+  viewerInfoOpen?: boolean;
   starredAssets?: string[];
   boards?: Record<string, BoardConfig>;
 };
@@ -18,6 +19,11 @@ type BoardConfig = {
   title?: string;
   cover?: string;
   notes?: string;
+};
+
+type BoardMutationResult = {
+  vault: VaultData;
+  boardId: string;
 };
 
 type Asset = {
@@ -48,6 +54,7 @@ type VaultData = {
   rootPath: string;
   title: string;
   theme: ThemeMode;
+  viewerInfoOpen: boolean;
   boards: Board[];
 };
 
@@ -149,6 +156,14 @@ function boardIdToDirectory(rootPath: string, boardId: string) {
   return path.join(rootPath, ...boardId.split("/"));
 }
 
+function directoryToBoardId(rootPath: string, directoryPath: string) {
+  return path.relative(rootPath, directoryPath).split(path.sep).join("/");
+}
+
+function isVisibleDirectoryName(name: string) {
+  return !name.startsWith(".");
+}
+
 function isWithinRoot(rootPath: string, candidatePath: string) {
   const normalizedRoot = `${path.resolve(rootPath)}${path.sep}`;
   const normalizedCandidate = path.resolve(candidatePath);
@@ -192,7 +207,7 @@ async function rememberVault(rootPath: string) {
 async function readConfig(rootPath: string): Promise<MossConfig> {
   const configPath = path.join(rootPath, CONFIG_FILENAME);
   if (!(await fileExists(configPath))) {
-    return { version: 1, theme: "dark", boards: {} };
+    return { version: 1, theme: "dark", viewerInfoOpen: false, boards: {} };
   }
 
   try {
@@ -202,17 +217,79 @@ async function readConfig(rootPath: string): Promise<MossConfig> {
       version: parsed.version ?? 1,
       title: parsed.title,
       theme: parsed.theme ?? "dark",
+      viewerInfoOpen: parsed.viewerInfoOpen ?? false,
       starredAssets: Array.isArray(parsed.starredAssets) ? parsed.starredAssets : [],
       boards: parsed.boards ?? {}
     };
   } catch {
-    return { version: 1, theme: "dark", boards: {} };
+    return { version: 1, theme: "dark", viewerInfoOpen: false, boards: {} };
   }
 }
 
 async function writeConfig(rootPath: string, config: MossConfig) {
   const configPath = path.join(rootPath, CONFIG_FILENAME);
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+function normalizeAlbumDirectoryName(name: string) {
+  return name
+    .trim()
+    .replace(/[\\/]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+async function uniqueDirectoryPath(parentDirectory: string, folderName: string) {
+  const normalizedName = normalizeAlbumDirectoryName(folderName);
+  if (!normalizedName) {
+    throw new Error("Album name cannot be empty.");
+  }
+
+  let counter = 0;
+
+  while (true) {
+    const candidateName = counter === 0 ? normalizedName : `${normalizedName} ${counter}`;
+    const candidatePath = path.join(parentDirectory, candidateName);
+
+    if (!(await fileExists(candidatePath))) {
+      return candidatePath;
+    }
+
+    counter += 1;
+  }
+}
+
+function rewriteBoardConfigPaths(
+  boards: Record<string, BoardConfig> | undefined,
+  fromBoardId: string,
+  toBoardId: string
+) {
+  if (!boards) {
+    return {};
+  }
+
+  const nextBoards: Record<string, BoardConfig> = {};
+
+  for (const [boardId, boardConfig] of Object.entries(boards)) {
+    if (boardId === fromBoardId || boardId.startsWith(`${fromBoardId}/`)) {
+      const suffix = boardId.slice(fromBoardId.length);
+      nextBoards[`${toBoardId}${suffix}`] = boardConfig;
+    } else {
+      nextBoards[boardId] = boardConfig;
+    }
+  }
+
+  return nextBoards;
+}
+
+function rewriteStarredAssetPaths(starredAssets: string[] | undefined, fromBoardId: string, toBoardId: string) {
+  return (starredAssets ?? []).map((relativePath) => {
+    if (relativePath === fromBoardId || relativePath.startsWith(`${fromBoardId}/`)) {
+      const suffix = relativePath.slice(fromBoardId.length);
+      return `${toBoardId}${suffix}`;
+    }
+
+    return relativePath;
+  });
 }
 
 async function loadAssetPayload(assetPath: string): Promise<AssetPayload> {
@@ -373,7 +450,7 @@ async function collectBoards(rootPath: string, config: MossConfig): Promise<Boar
     }
 
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
-    const childDirectories = entries.filter((entry) => entry.isDirectory());
+    const childDirectories = entries.filter((entry) => entry.isDirectory() && isVisibleDirectoryName(entry.name));
 
     for (const childDirectory of childDirectories) {
       await visitDirectory(path.join(directoryPath, childDirectory.name));
@@ -384,10 +461,6 @@ async function collectBoards(rootPath: string, config: MossConfig): Promise<Boar
     }
 
     const treeAssets = await collectTreeAssets(rootPath, directoryPath, starredAssets, treeCache);
-    if (treeAssets.length === 0) {
-      return;
-    }
-
     const directAssets = await collectDirectAssets(rootPath, directoryPath, starredAssets);
     const boardId = relativePath.split(path.sep).join("/");
     const boardConfig = config.boards?.[boardId];
@@ -437,6 +510,7 @@ async function scanVault(rootPath: string): Promise<VaultData> {
     rootPath,
     title: config.title || path.basename(rootPath),
     theme: config.theme ?? "dark",
+    viewerInfoOpen: config.viewerInfoOpen ?? false,
     boards
   };
 }
@@ -474,6 +548,55 @@ async function moveFile(sourcePath: string, destinationPath: string) {
     await fs.copyFile(sourcePath, destinationPath);
     await fs.unlink(sourcePath);
   }
+}
+
+async function createBoard(rootPath: string, parentBoardId: string | null, name: string): Promise<BoardMutationResult> {
+  const parentDirectory = parentBoardId ? boardIdToDirectory(rootPath, parentBoardId) : rootPath;
+  await ensureDirectory(parentDirectory);
+  const nextDirectory = await uniqueDirectoryPath(parentDirectory, name);
+  await fs.mkdir(nextDirectory, { recursive: true });
+
+  const boardId = directoryToBoardId(rootPath, nextDirectory);
+  return {
+    boardId,
+    vault: await scanVault(rootPath)
+  };
+}
+
+async function renameBoard(rootPath: string, boardId: string, nextName: string): Promise<BoardMutationResult> {
+  const currentDirectory = boardIdToDirectory(rootPath, boardId);
+  const stats = await fs.stat(currentDirectory);
+
+  if (!stats.isDirectory()) {
+    throw new Error("Album path must be a directory.");
+  }
+
+  const parentDirectory = path.dirname(currentDirectory);
+  const normalizedName = normalizeAlbumDirectoryName(nextName);
+  if (!normalizedName) {
+    throw new Error("Album name cannot be empty.");
+  }
+
+  const targetDirectory = path.join(parentDirectory, normalizedName);
+  if (path.resolve(targetDirectory) !== path.resolve(currentDirectory) && (await fileExists(targetDirectory))) {
+    throw new Error("Another album with that name already exists.");
+  }
+
+  await fs.rename(currentDirectory, targetDirectory);
+
+  const nextBoardId = directoryToBoardId(rootPath, targetDirectory);
+  const config = await readConfig(rootPath);
+  await writeConfig(rootPath, {
+    ...config,
+    version: config.version ?? 1,
+    boards: rewriteBoardConfigPaths(config.boards, boardId, nextBoardId),
+    starredAssets: rewriteStarredAssetPaths(config.starredAssets, boardId, nextBoardId)
+  });
+
+  return {
+    boardId: nextBoardId,
+    vault: await scanVault(rootPath)
+  };
 }
 
 ipcMain.handle("vault:pick", async () => {
@@ -519,6 +642,18 @@ ipcMain.handle("theme:persist", async (_event, rootPath: string, mode: ThemeMode
 
   await writeConfig(rootPath, nextConfig);
   nativeTheme.themeSource = mode;
+  return nextConfig;
+});
+
+ipcMain.handle("viewer-info:persist", async (_event, rootPath: string, isOpen: boolean) => {
+  const config = await readConfig(rootPath);
+  const nextConfig: MossConfig = {
+    ...config,
+    version: config.version ?? 1,
+    viewerInfoOpen: isOpen
+  };
+
+  await writeConfig(rootPath, nextConfig);
   return nextConfig;
 });
 
@@ -611,6 +746,14 @@ ipcMain.handle("assets:delete", async (_event, rootPath: string, sourcePaths: st
   }
 
   return scanVault(rootPath);
+});
+
+ipcMain.handle("board:create", async (_event, rootPath: string, parentBoardId: string | null, name: string) => {
+  return createBoard(rootPath, parentBoardId, name);
+});
+
+ipcMain.handle("board:rename", async (_event, rootPath: string, boardId: string, name: string) => {
+  return renameBoard(rootPath, boardId, name);
 });
 
 ipcMain.on("asset:start-drag", (event, assetPath: string) => {

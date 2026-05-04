@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("moss", {
   setTheme: (mode: "light" | "dark" | "system") => ipcRenderer.invoke("theme:set", mode),
   persistTheme: (rootPath: string, mode: "light" | "dark" | "system") =>
     ipcRenderer.invoke("theme:persist", rootPath, mode),
+  persistViewerInfo: (rootPath: string, isOpen: boolean) => ipcRenderer.invoke("viewer-info:persist", rootPath, isOpen),
   getDevVaultPath: () => ipcRenderer.invoke("dev:vault-path"),
   getAppState: () => ipcRenderer.invoke("app:state"),
   loadOriginalAsset: (assetPath: string) => ipcRenderer.invoke("asset:load-original", assetPath),
@@ -14,6 +15,10 @@ contextBridge.exposeInMainWorld("moss", {
   toggleStarAsset: (rootPath: string, relativePath: string) => ipcRenderer.invoke("asset:toggle-star", rootPath, relativePath),
   saveCropAsset: (rootPath: string, assetPath: string, cropRect: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke("asset:save-crop", rootPath, assetPath, cropRect),
+  createBoard: (rootPath: string, parentBoardId: string | null, name: string) =>
+    ipcRenderer.invoke("board:create", rootPath, parentBoardId, name),
+  renameBoard: (rootPath: string, boardId: string, name: string) =>
+    ipcRenderer.invoke("board:rename", rootPath, boardId, name),
   importAssets: (rootPath: string, boardId: string, sourcePaths: string[]) =>
     ipcRenderer.invoke("assets:import", rootPath, boardId, sourcePaths),
   moveAssets: (rootPath: string, boardId: string, sourcePaths: string[]) =>

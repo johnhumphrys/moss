@@ -11,7 +11,13 @@
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:unit": "vitest run src/lib/board-utils.unit.test.ts src/lib/formatters.unit.test.ts src/lib/album-dialog.unit.test.ts src/lib/asset-utils.unit.test.ts",
+    "test:int": "vitest run src/App.int.test.tsx",
+    "test:ui": "vitest run src/App.ui.test.tsx",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "electron",
@@ -26,14 +32,26 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^5.0.0",
+    "@vitest/coverage-v8": "^4.1.5",
     "concurrently": "^9.1.2",
     "electron": "^36.2.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.8.3",
+    "typescript-eslint": "^8.59.1",
     "vite": "^6.3.5",
+    "vitest": "^4.1.5",
     "wait-on": "^8.0.3"
   }
 }
