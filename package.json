@@ -11,6 +11,8 @@
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
@@ -19,15 +21,57 @@
     "test:ui": "vitest run src/App.ui.test.tsx",
     "test:coverage": "vitest run --coverage"
   },
+  "build": {
+    "appId": "com.johnhumphrys.moss",
+    "productName": "Moss",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.photography",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage"
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis"
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "johnhumphrys",
+      "repo": "moss"
+    }
+  },
   "keywords": [
     "electron",
     "moodboard",
     "visual",
     "offline"
   ],
-  "author": "",
+  "author": "John Humphrys",
   "license": "MIT",
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -43,6 +87,7 @@
     "@vitest/coverage-v8": "^4.1.5",
     "concurrently": "^9.1.2",
     "electron": "^36.2.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",

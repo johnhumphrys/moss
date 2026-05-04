@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme } from "electron";
+import { autoUpdater } from "electron-updater";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -12,6 +13,7 @@ type MossConfig = {
   theme?: ThemeMode;
   viewerInfoOpen?: boolean;
   starredAssets?: string[];
+  assetNotes?: Record<string, string>;
   boards?: Record<string, BoardConfig>;
 };
 
@@ -32,6 +34,7 @@ type Asset = {
   absolutePath: string;
   relativePath: string;
   starred?: boolean;
+  notes?: string;
   thumbnailPath?: string;
   size: number;
   modifiedAt: string;
@@ -219,6 +222,7 @@ async function readConfig(rootPath: string): Promise<MossConfig> {
       theme: parsed.theme ?? "dark",
       viewerInfoOpen: parsed.viewerInfoOpen ?? false,
       starredAssets: Array.isArray(parsed.starredAssets) ? parsed.starredAssets : [],
+      assetNotes: parsed.assetNotes && typeof parsed.assetNotes === "object" ? parsed.assetNotes : {},
       boards: parsed.boards ?? {}
     };
   } catch {
@@ -395,7 +399,7 @@ function sortAssetsWithStarredFirst(assets: Asset[]) {
   });
 }
 
-async function collectDirectAssets(rootPath: string, directoryPath: string, starredAssets: Set<string>): Promise<Asset[]> {
+async function collectDirectAssets(rootPath: string, directoryPath: string, starredAssets: Set<string>, assetNotes: Record<string, string>): Promise<Asset[]> {
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
   const assets = await Promise.all(
     entries
@@ -404,7 +408,8 @@ async function collectDirectAssets(rootPath: string, directoryPath: string, star
         const asset = await toAsset(rootPath, path.join(directoryPath, entry.name));
         return {
           ...asset,
-          starred: starredAssets.has(asset.relativePath)
+          starred: starredAssets.has(asset.relativePath),
+          notes: assetNotes[asset.relativePath] || undefined
         };
       })
   );
@@ -416,6 +421,7 @@ async function collectTreeAssets(
   rootPath: string,
   directoryPath: string,
   starredAssets: Set<string>,
+  assetNotes: Record<string, string>,
   cache: Map<string, Promise<Asset[]>>
 ): Promise<Asset[]> {
   const cached = cache.get(directoryPath);
@@ -424,11 +430,11 @@ async function collectTreeAssets(
   }
 
   const promise = (async () => {
-    const directAssets = await collectDirectAssets(rootPath, directoryPath, starredAssets);
+    const directAssets = await collectDirectAssets(rootPath, directoryPath, starredAssets, assetNotes);
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
     const childDirectories = entries.filter((entry) => entry.isDirectory());
     const nestedAssets = await Promise.all(
-      childDirectories.map((entry) => collectTreeAssets(rootPath, path.join(directoryPath, entry.name), starredAssets, cache))
+      childDirectories.map((entry) => collectTreeAssets(rootPath, path.join(directoryPath, entry.name), starredAssets, assetNotes, cache))
     );
 
     return sortAssetsWithStarredFirst([...directAssets, ...nestedAssets.flat()]);
@@ -442,6 +448,7 @@ async function collectBoards(rootPath: string, config: MossConfig): Promise<Boar
   const boards: Board[] = [];
   const treeCache = new Map<string, Promise<Asset[]>>();
   const starredAssets = new Set(config.starredAssets ?? []);
+  const assetNotes = config.assetNotes ?? {};
 
   async function visitDirectory(directoryPath: string) {
     const relativePath = path.relative(rootPath, directoryPath);
@@ -460,8 +467,8 @@ async function collectBoards(rootPath: string, config: MossConfig): Promise<Boar
       return;
     }
 
-    const treeAssets = await collectTreeAssets(rootPath, directoryPath, starredAssets, treeCache);
-    const directAssets = await collectDirectAssets(rootPath, directoryPath, starredAssets);
+    const treeAssets = await collectTreeAssets(rootPath, directoryPath, starredAssets, assetNotes, treeCache);
+    const directAssets = await collectDirectAssets(rootPath, directoryPath, starredAssets, assetNotes);
     const boardId = relativePath.split(path.sep).join("/");
     const boardConfig = config.boards?.[boardId];
 
@@ -676,6 +683,22 @@ ipcMain.handle("asset:toggle-star", async (_event, rootPath: string, relativePat
   return scanVault(rootPath);
 });
 
+ipcMain.handle("asset:set-note", async (_event, rootPath: string, relativePath: string, note: string) => {
+  console.log("[moss] asset:set-note", relativePath, JSON.stringify(note));
+  const config = await readConfig(rootPath);
+  const nextNotes = { ...(config.assetNotes ?? {}) };
+
+  if (note.trim()) {
+    nextNotes[relativePath] = note;
+  } else {
+    delete nextNotes[relativePath];
+  }
+
+  await writeConfig(rootPath, { ...config, assetNotes: nextNotes });
+  console.log("[moss] asset:set-note written, notes:", JSON.stringify(nextNotes));
+  return scanVault(rootPath);
+});
+
 ipcMain.handle("dev:vault-path", async () => {
   if (await fileExists(DEV_DEFAULT_VAULT_PATH)) {
     return DEV_DEFAULT_VAULT_PATH;
@@ -776,6 +799,10 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify();
+  }
 });
 
 app.on("window-all-closed", () => {

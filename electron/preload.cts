@@ -25,5 +25,7 @@ contextBridge.exposeInMainWorld("moss", {
     ipcRenderer.invoke("assets:move", rootPath, boardId, sourcePaths),
   deleteAssets: (rootPath: string, sourcePaths: string[]) =>
     ipcRenderer.invoke("assets:delete", rootPath, sourcePaths),
+  setAssetNote: (rootPath: string, relativePath: string, note: string) =>
+    ipcRenderer.invoke("asset:set-note", rootPath, relativePath, note),
   startAssetDrag: (assetPath: string) => ipcRenderer.send("asset:start-drag", assetPath)
 });

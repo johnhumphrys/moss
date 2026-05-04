@@ -8,6 +8,7 @@ type Asset = {
   absolutePath: string;
   relativePath: string;
   starred?: boolean;
+  notes?: string;
   thumbnailPath?: string;
   size: number;
   modifiedAt: string;
@@ -80,6 +81,7 @@ interface Window {
     importAssets: (rootPath: string, boardId: string, sourcePaths: string[]) => Promise<VaultData>;
     moveAssets: (rootPath: string, boardId: string, sourcePaths: string[]) => Promise<VaultData>;
     deleteAssets: (rootPath: string, sourcePaths: string[]) => Promise<VaultData>;
+    setAssetNote: (rootPath: string, relativePath: string, note: string) => Promise<VaultData>;
     startAssetDrag: (assetPath: string) => void;
   };
 }
