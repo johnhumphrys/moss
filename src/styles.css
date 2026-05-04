@@ -224,8 +224,8 @@ select,
   gap: 12px;
 }
 
-.path-entry {
-  margin-top: 18px;
+.settings-actions {
+  margin-top: 14px;
 }
 
 .path-input,
@@ -1141,7 +1141,18 @@ select {
 .settings-theme-row {
   display: flex;
   gap: 12px;
-  margin-top: 18px;
+  margin-top: 14px;
+}
+
+.current-dir {
+  margin-top: 14px;
+}
+
+.current-dir-path {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: var(--text);
+  word-break: break-all;
 }
 
 .settings-head {

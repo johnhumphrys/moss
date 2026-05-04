@@ -1387,17 +1387,12 @@ function App() {
                 Light
               </button>
             </div>
-            <div className="path-entry">
-              <input
-                className="path-input"
-                value={manualFolderPath}
-                onChange={(event) => setManualFolderPath(event.target.value)}
-                placeholder="/path/to/your/moodboards"
-              />
-              <button className="ghost-button" onClick={() => void openCurrentPathInput()}>
-                Open Path
-              </button>
-            </div>
+            {manualFolderPath ? (
+              <div className="current-dir">
+                <p className="recent-title">Current open directory</p>
+                <p className="current-dir-path">{manualFolderPath}</p>
+              </div>
+            ) : null}
             <div className="settings-actions">
               <button className="primary-button" onClick={() => void pickFolder()} disabled={isPicking}>
                 {isPicking ? "Opening…" : "Choose Folder"}
