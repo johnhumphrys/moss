@@ -21,7 +21,7 @@ Moss stores one small metadata file (`.moss`) at your library root for things li
 
 Grab the latest release from the [GitHub releases page](https://github.com/johnhumphrys/moss/releases).
 
-macOS only for now (Apple Silicon + Intel). After installing, if macOS flags it as unverified, go to **System Settings → Privacy & Security** and click **Open Anyway**.
+Available for macOS (Apple Silicon + Intel) and Windows. After installing on macOS, if it's flagged as unverified, go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 ---
 

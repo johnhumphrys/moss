@@ -19,7 +19,7 @@ const createBridge = () => {
     setTheme: vi.fn().mockResolvedValue("dark"),
     persistTheme: vi.fn().mockResolvedValue({}),
     persistViewerInfo: vi.fn().mockResolvedValue({}),
-    getDevVaultPath: vi.fn().mockResolvedValue("/Moodboards"),
+
     getAppState: vi.fn().mockResolvedValue(createAppState()),
     loadOriginalAsset: vi.fn().mockResolvedValue(previewPayload),
     loadPreviewAsset: vi.fn().mockResolvedValue(previewPayload),

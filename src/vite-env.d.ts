@@ -33,6 +33,7 @@ type VaultData = {
   theme: ThemeMode;
   viewerInfoOpen: boolean;
   boards: Board[];
+  isFirstOpen: boolean;
 };
 
 type BoardMutationResult = {
@@ -60,12 +61,13 @@ type CropRect = {
 
 interface Window {
   moss: {
+    createVault: () => Promise<VaultData | null>;
     pickVault: () => Promise<VaultData | null>;
     loadVault: (rootPath: string) => Promise<VaultData>;
     setTheme: (mode: ThemeMode) => Promise<"light" | "dark">;
     persistTheme: (rootPath: string, mode: ThemeMode) => Promise<unknown>;
     persistViewerInfo: (rootPath: string, isOpen: boolean) => Promise<unknown>;
-    getDevVaultPath: () => Promise<string | null>;
+
     getAppState: () => Promise<AppState>;
     loadOriginalAsset: (assetPath: string) => Promise<AssetPayload>;
     loadPreviewAsset: (
@@ -82,6 +84,7 @@ interface Window {
     moveAssets: (rootPath: string, boardId: string, sourcePaths: string[]) => Promise<VaultData>;
     deleteAssets: (rootPath: string, sourcePaths: string[]) => Promise<VaultData>;
     setAssetNote: (rootPath: string, relativePath: string, note: string) => Promise<VaultData>;
+    completeOnboarding: () => Promise<void>;
     startAssetDrag: (assetPath: string) => void;
   };
 }

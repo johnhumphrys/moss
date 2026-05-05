@@ -61,11 +61,13 @@ type VaultData = {
   theme: ThemeMode;
   viewerInfoOpen: boolean;
   boards: Board[];
+  isFirstOpen: boolean;
 };
 
 type AppSettings = {
   recentVaults: string[];
   lastVaultPath?: string;
+  hasSeenOnboarding?: boolean;
 };
 
 type AssetPayload = {
@@ -84,7 +86,6 @@ type CropRect = {
 const SUPPORTED_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 const CONFIG_FILENAME = ".moss";
 const SETTINGS_FILENAME = "settings.json";
-const DEV_DEFAULT_VAULT_PATH = "/Users/johnhumphrys/Documents/Moodboards";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -98,7 +99,14 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 740,
     backgroundColor: "#141312",
-    titleBarStyle: "hiddenInset",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
+    ...(process.platform !== "darwin" && {
+      titleBarOverlay: {
+        color: "#141312",
+        symbolColor: "#ffffff",
+        height: 40
+      }
+    }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -518,7 +526,8 @@ async function scanVault(rootPath: string): Promise<VaultData> {
     title: config.title || path.basename(rootPath),
     theme: config.theme ?? "dark",
     viewerInfoOpen: config.viewerInfoOpen ?? false,
-    boards
+    boards,
+    isFirstOpen: false
   };
 }
 
@@ -605,6 +614,38 @@ async function renameBoard(rootPath: string, boardId: string, nextName: string):
     vault: await scanVault(rootPath)
   };
 }
+
+ipcMain.handle("vault:create", async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory", "createDirectory"],
+    buttonLabel: "Create Library Here"
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const rootPath = result.filePaths[0];
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+  const visibleEntries = entries.filter((e) => !e.name.startsWith("."));
+
+  if (visibleEntries.length > 0) {
+    throw new Error("Please choose an empty folder. Moss libraries must start in a clean directory.");
+  }
+
+  await writeConfig(rootPath, { version: 1, theme: "dark", viewerInfoOpen: false, starredAssets: [], boards: {} });
+
+  const settings = await readAppSettings();
+  const vault = await scanVault(rootPath);
+  vault.isFirstOpen = !settings.hasSeenOnboarding;
+  await rememberVault(rootPath);
+  return vault;
+});
+
+ipcMain.handle("vault:complete-onboarding", async () => {
+  const settings = await readAppSettings();
+  await writeAppSettings({ ...settings, hasSeenOnboarding: true });
+});
 
 ipcMain.handle("vault:pick", async () => {
   const result = await dialog.showOpenDialog({
@@ -697,14 +738,6 @@ ipcMain.handle("asset:set-note", async (_event, rootPath: string, relativePath: 
   await writeConfig(rootPath, { ...config, assetNotes: nextNotes });
   console.log("[moss] asset:set-note written, notes:", JSON.stringify(nextNotes));
   return scanVault(rootPath);
-});
-
-ipcMain.handle("dev:vault-path", async () => {
-  if (await fileExists(DEV_DEFAULT_VAULT_PATH)) {
-    return DEV_DEFAULT_VAULT_PATH;
-  }
-
-  return null;
 });
 
 ipcMain.handle("app:state", async () => readAppSettings());

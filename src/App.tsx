@@ -1,4 +1,4 @@
-import { DragEvent, PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { DragEvent, PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import trashIcon from "./trash.png";
 import { buildCreateAlbumDialog, buildRenameAlbumDialog, normalizeAlbumNameInput, type AlbumDialogState } from "./lib/album-dialog";
 import {
@@ -24,15 +24,21 @@ const INTERNAL_DRAG_MIME = "application/x-moss-asset-paths";
 const getBridge = () => window.moss;
 
 function App() {
-  const devDefaultFolder = "/Users/johnhumphrys/Documents/Moodboards";
   const [library, setLibrary] = useState<VaultData | null>(null);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<ViewerState | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("dark");
+  const [isCreating, setIsCreating] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
-  const [manualFolderPath, setManualFolderPath] = useState(devDefaultFolder);
   const [appState, setAppState] = useState<AppState>({ recentVaults: [] });
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [onboardingPos, setOnboardingPos] = useState<{ top: number; left: number; rawTargetY: number } | null>(null);
+  const [onboardingArrowTop, setOnboardingArrowTop] = useState(0);
+  const sidebarCollapseRef = useRef<HTMLButtonElement>(null);
+  const newAlbumRef = useRef<HTMLButtonElement>(null);
+  const onboardingTooltipRef = useRef<HTMLDivElement>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'single'; assetId: string } | { type: 'bulk' } | null>(null);
@@ -134,11 +140,6 @@ function App() {
             loadLibrary(nextLibrary);
           } catch {
             setErrorMessage("Could not reopen the last folder. Choose it again in Settings.");
-          }
-        } else {
-          const devPath = await getBridge().getDevVaultPath();
-          if (devPath) {
-            setManualFolderPath(devPath);
           }
         }
       } finally {
@@ -373,10 +374,43 @@ function App() {
     setAlbumInfoOpen(false);
   }, [selectedBoardId]);
 
+  // Position onboarding tooltip next to its target element, clamped to viewport
+  useEffect(() => {
+    if (!showOnboarding) return;
+    const el = onboardingStep === 0 ? sidebarCollapseRef.current : onboardingStep === 1 ? newAlbumRef.current : null;
+    if (!el) { setOnboardingPos(null); return; }
+    const rect = el.getBoundingClientRect();
+    const rawTargetY = rect.top + rect.height / 2;
+    // Rough clamp using estimated half-height; arrow position is corrected in useLayoutEffect
+    const halfH = (onboardingTooltipRef.current?.offsetHeight ?? 120) / 2;
+    const margin = 8;
+    const top = Math.min(Math.max(rawTargetY, halfH + margin), window.innerHeight - halfH - margin);
+    setOnboardingPos({ top, left: rect.right + 20, rawTargetY });
+  }, [showOnboarding, onboardingStep, sidebarCollapsed]);
+
+  // After tooltip renders, measure its actual position and set arrow precisely
+  useLayoutEffect(() => {
+    if (!onboardingPos || !onboardingTooltipRef.current) return;
+    const tooltipRect = onboardingTooltipRef.current.getBoundingClientRect();
+    setOnboardingArrowTop(onboardingPos.rawTargetY - tooltipRect.top);
+  }, [onboardingPos]);
+
+  // Simulate sidebar collapse/expand on step 0
+  useEffect(() => {
+    if (!showOnboarding || onboardingStep !== 0) return;
+    const t1 = setTimeout(() => setSidebarCollapsed(true), 900);
+    const t2 = setTimeout(() => setSidebarCollapsed(false), 2000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [showOnboarding, onboardingStep]);
+
   function loadLibrary(nextLibrary: VaultData, options?: { preserveCaches?: boolean }) {
     setLibrary(nextLibrary);
     setTheme(nextLibrary.theme ?? "dark");
     setShowInfo(nextLibrary.viewerInfoOpen ?? false);
+    if (nextLibrary.isFirstOpen) {
+      setShowOnboarding(true);
+      setOnboardingStep(0);
+    }
     setSelectedBoardId((current) =>
       nextLibrary.boards.some((board) => board.id === current) ? current : nextLibrary.boards[0]?.id ?? null
     );
@@ -397,6 +431,23 @@ function App() {
     }
 
     setAppState(await getBridge().getAppState());
+  };
+
+  const createLibrary = async () => {
+    if (!hasDesktopBridge) return;
+    setIsCreating(true);
+    setErrorMessage(null);
+    try {
+      const nextLibrary = await getBridge().createVault();
+      if (!nextLibrary) return;
+      loadLibrary(nextLibrary);
+      setSettingsOpen(false);
+      await refreshAppState();
+    } catch {
+      setStatusMessage("Choose an empty directory — Moss will set it up for you.");
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const pickFolder = async () => {
@@ -441,15 +492,6 @@ function App() {
     }
   };
 
-  const openCurrentPathInput = async () => {
-    const trimmedPath = manualFolderPath.trim();
-    if (!trimmedPath) {
-      setErrorMessage("Enter a folder path first.");
-      return;
-    }
-
-    await openFolderPath(trimmedPath);
-  };
 
   const updateTheme = async (nextTheme: ThemeMode) => {
     setTheme(nextTheme);
@@ -952,28 +994,24 @@ function App() {
             <p className="eyebrow">Moss</p>
             <h1>Your offline visual library.</h1>
             <p className="lede">Browse folders like moodboards, keep everything local, and move images around without leaving the filesystem.</p>
+            {appState.recentVaults.length === 0 && !isInitialLoading ? (
+              <ol className="onboarding-steps">
+                <li>Pick any folder on your computer</li>
+                <li>Subfolders become albums — nothing moves</li>
+                <li>Browse, star, and organise from inside the app</li>
+              </ol>
+            ) : null}
             <div className="welcome-actions">
-              <button className="primary-button" onClick={() => void pickFolder()} disabled={isPicking}>
-                {isPicking ? "Opening…" : "Choose Folder"}
+              <button className="primary-button" onClick={() => void createLibrary()} disabled={isCreating || isPicking}>
+                {isCreating ? "Creating…" : "Create Library"}
               </button>
-              <button className="ghost-button" onClick={() => void openFolderPath(devDefaultFolder)}>
-                Open Moodboards
-              </button>
-            </div>
-            <div className="path-entry">
-              <input
-                className="path-input"
-                value={manualFolderPath}
-                onChange={(event) => setManualFolderPath(event.target.value)}
-                placeholder="/path/to/your/moodboards"
-              />
-              <button className="ghost-button" onClick={() => void openCurrentPathInput()}>
-                Open Path
+              <button className="ghost-button" onClick={() => void pickFolder()} disabled={isPicking || isCreating}>
+                {isPicking ? "Opening…" : "Open Library"}
               </button>
             </div>
             {appState.recentVaults.length > 0 ? (
               <div className="recent-vaults">
-                <p className="recent-title">Recent folders</p>
+                <p className="recent-title">Recent libraries</p>
                 <div className="recent-list">
                   {appState.recentVaults.map((rootPath) => (
                     <button key={rootPath} className="recent-chip" onClick={() => void openFolderPath(rootPath)}>
@@ -1011,7 +1049,7 @@ function App() {
 
             <nav className="board-list">
               {rootBoards.map((board) => renderBoardCard(board))}
-              <button className="board-tile board-tile-template" onClick={() => openCreateAlbumDialog(null)} aria-label="New album">
+              <button ref={newAlbumRef} className={`board-tile board-tile-template${showOnboarding && onboardingStep === 1 ? " onboarding-pulse" : ""}`} onClick={() => openCreateAlbumDialog(null)} aria-label="New album">
                 <span className="board-cover-template">+</span>
                 <span className="board-copy board-copy-below">
                   <strong>New album</strong>
@@ -1026,7 +1064,8 @@ function App() {
             ⚙
           </button>
           <button
-            className="settings-button sidebar-collapse-btn"
+            ref={sidebarCollapseRef}
+            className={`settings-button sidebar-collapse-btn${showOnboarding && onboardingStep === 0 ? " onboarding-pulse" : ""}`}
             onClick={() => setSidebarCollapsed((v) => !v)}
             aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -1223,7 +1262,7 @@ function App() {
             </div>
           </>
         ) : (
-          <div className="empty-board">No folders with images yet.</div>
+          <div className="empty-board">No albums with images yet.</div>
         )}
       </section>
 
@@ -1281,41 +1320,42 @@ function App() {
             <button className="viewer-nav viewer-nav-right" onClick={() => stepViewer(1)}>
               ›
             </button>
+          </div>
 
-            <div className="viewer-toolbar">
-              <button className={`icon-button ${cropMode ? "active" : ""}`} onClick={() => setCropMode((current) => !current)} aria-label="Crop">
-                ⛶
+          <div className="viewer-toolbar" onClick={(e) => e.stopPropagation()}>
+            <button className={`icon-button ${cropMode ? "active" : ""}`} onClick={() => setCropMode((current) => !current)} aria-label="Crop">
+              ⛶
+            </button>
+            <button className={`icon-button ${showInfo ? "active" : ""}`} onClick={() => void updateShowInfo(!showInfo)}>
+              i
+            </button>
+            <button
+              className="icon-button viewer-delete-button"
+              onClick={() => setDeleteConfirm({ type: 'single', assetId: selectedAsset.id })}
+              disabled={isMutatingAssets}
+              aria-label="Delete image"
+              title="Delete image"
+            >
+              <img src={trashIcon} alt="" style={{ width: 18, height: 18, filter: "invert(1)" }} />
+            </button>
+            <button className="icon-button" onClick={() => setViewer(null)}>
+              ×
+            </button>
+          </div>
+
+          {cropMode && selectedAssetDimensions ? (
+            <div className="crop-toolbar" onClick={(e) => e.stopPropagation()}>
+              <button className="ghost-button" onClick={() => setCropMode(false)}>
+                Cancel
               </button>
-              <button className={`icon-button ${showInfo ? "active" : ""}`} onClick={() => void updateShowInfo(!showInfo)}>
-                i
-              </button>
-              <button
-                className="icon-button viewer-delete-button"
-                onClick={() => setDeleteConfirm({ type: 'single', assetId: selectedAsset.id })}
-                disabled={isMutatingAssets}
-                aria-label="Delete image"
-                title="Delete image"
-              >
-                <img src={trashIcon} alt="" style={{ width: 18, height: 18, filter: "invert(1)" }} />
-              </button>
-              <button className="icon-button" onClick={() => setViewer(null)}>
-                ×
+              <button className="primary-button" onClick={() => void saveCrop()} disabled={savingCrop}>
+                {savingCrop ? "Saving…" : "Save Crop"}
               </button>
             </div>
+          ) : null}
 
-            {cropMode && selectedAssetDimensions ? (
-              <div className="crop-toolbar">
-                <button className="ghost-button" onClick={() => setCropMode(false)}>
-                  Cancel
-                </button>
-                <button className="primary-button" onClick={() => void saveCrop()} disabled={savingCrop}>
-                  {savingCrop ? "Saving…" : "Save Crop"}
-                </button>
-              </div>
-            ) : null}
-
-            {cropMode && !viewerImageLoading ? (
-              <div className="crop-overlay">
+          {cropMode && !viewerImageLoading ? (
+            <div className="crop-overlay" onClick={(e) => e.stopPropagation()}>
                 <div
                   className="crop-rect"
                   style={{
@@ -1343,7 +1383,7 @@ function App() {
                 <h3>{selectedAsset.name}</h3>
                 <dl>
                   <div>
-                    <dt>Folder</dt>
+                    <dt>Album</dt>
                     <dd>{selectedBoard.title}</dd>
                   </div>
                   <div>
@@ -1365,7 +1405,6 @@ function App() {
                 </dl>
               </aside>
             ) : null}
-          </div>
         </div>
       ) : null}
 
@@ -1378,38 +1417,20 @@ function App() {
                 ×
               </button>
             </div>
-            <p className="subtle">Choose the folder Moss should use for your moodboards.</p>
-            <div className="settings-theme-row">
-              <button className={`theme-chip ${theme === "dark" ? "active" : ""}`} onClick={() => void updateTheme("dark")}>
-                Dark
-              </button>
-              <button className={`theme-chip ${theme === "light" ? "active" : ""}`} onClick={() => void updateTheme("light")}>
-                Light
-              </button>
-            </div>
-            {manualFolderPath ? (
+            {library?.rootPath ? (
               <div className="current-dir">
-                <p className="recent-title">Current open directory</p>
-                <p className="current-dir-path">{manualFolderPath}</p>
+                <p className="recent-title">Current library</p>
+                <p className="current-dir-path">{library.rootPath}</p>
               </div>
             ) : null}
             <div className="settings-actions">
-              <button className="primary-button" onClick={() => void pickFolder()} disabled={isPicking}>
-                {isPicking ? "Opening…" : "Choose Folder"}
+              <button className="primary-button" onClick={() => void createLibrary()} disabled={isCreating || isPicking}>
+                {isCreating ? "Creating…" : "New Library"}
+              </button>
+              <button className="ghost-button" onClick={() => void pickFolder()} disabled={isPicking || isCreating}>
+                {isPicking ? "Opening…" : "Open Library"}
               </button>
             </div>
-            {appState.recentVaults.length > 0 ? (
-              <div className="recent-vaults">
-                <p className="recent-title">Recent folders</p>
-                <div className="recent-list">
-                  {appState.recentVaults.map((rootPath) => (
-                    <button key={rootPath} className="recent-chip" onClick={() => void openFolderPath(rootPath)}>
-                      {rootPath}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
             {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
             <div className="settings-footer">
               <a href="https://github.com/johnhumphrys/moss" target="_blank" rel="noreferrer" className="settings-link">
@@ -1480,6 +1501,54 @@ function App() {
     {albumInfoOpen ? <div className="album-info-backdrop" onClick={() => setAlbumInfoOpen(false)} /> : null}
 
     {statusMessage ? <div className="toast-notification">{statusMessage}</div> : null}
+
+    {showOnboarding && library ? (
+      <div className="onboarding-overlay">
+        <div
+          ref={onboardingTooltipRef}
+          className={`onboarding-tooltip ${onboardingPos ? "anchored" : "centered"}`}
+          style={onboardingPos ? { top: onboardingPos.top, left: onboardingPos.left } : undefined}
+        >
+          {onboardingPos && <div className="onboarding-arrow" style={{ top: onboardingArrowTop }} />}
+          <div className="onboarding-step-indicator">
+            {[0, 1, 2].map((i) => (
+              <span key={i} className={`onboarding-dot ${i === onboardingStep ? "active" : ""}`} />
+            ))}
+          </div>
+          {onboardingStep === 0 && (
+            <>
+              <h3>The sidebar</h3>
+              <p>Your albums live here. The <strong>‹</strong> button collapses it to give your images more space.</p>
+            </>
+          )}
+          {onboardingStep === 1 && (
+            <>
+              <h3>Create an album</h3>
+              <p>Click <strong>+ New album</strong> to create your first album. Albums are just folders — nothing moves.</p>
+            </>
+          )}
+          {onboardingStep === 2 && (
+            <>
+              <h3>Add photos</h3>
+              <p>Open an album then drag images in from your file manager, or drop them onto an album tile in the sidebar.</p>
+            </>
+          )}
+          <div className="onboarding-actions">
+            {onboardingStep > 0 && (
+              <button className="ghost-button" onClick={() => setOnboardingStep((s) => s - 1)}>Back</button>
+            )}
+            {onboardingStep < 2 ? (
+              <button className="primary-button" onClick={() => setOnboardingStep((s) => s + 1)}>Next</button>
+            ) : (
+              <button className="primary-button" onClick={() => {
+                setShowOnboarding(false);
+                void getBridge().completeOnboarding();
+              }}>Get started</button>
+            )}
+          </div>
+        </div>
+      </div>
+    ) : null}
 
     {deleteConfirm ? (
       <div className="settings-backdrop" onClick={() => setDeleteConfirm(null)}>
