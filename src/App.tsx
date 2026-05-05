@@ -467,8 +467,8 @@ function App() {
       loadLibrary(nextLibrary);
       await refreshAppState();
       setSettingsOpen(false);
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : "Could not open library.");
+    } catch {
+      setStatusMessage("That directory isn't a Moss library. Use Create Library to start a new one.");
     } finally {
       setIsPicking(false);
     }
