@@ -378,14 +378,12 @@ async function loadPreviewPayload(
 async function toAsset(rootPath: string, filePath: string): Promise<Asset> {
   const stats = await fs.stat(filePath);
   const relativePath = path.relative(rootPath, filePath);
-  const thumbnailPath = await ensureThumbnail(filePath, relativePath, stats.mtime.toISOString(), stats.size);
 
   return {
     id: relativePath,
     name: path.basename(filePath),
     absolutePath: filePath,
     relativePath,
-    thumbnailPath,
     size: stats.size,
     modifiedAt: stats.mtime.toISOString()
   };
