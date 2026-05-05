@@ -1019,6 +1019,7 @@ function App() {
             {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
           </section>
         </main>
+        {statusMessage ? <div className="toast-notification">{statusMessage}</div> : null}
       </>
     );
   }
