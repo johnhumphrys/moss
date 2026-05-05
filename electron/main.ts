@@ -657,6 +657,10 @@ ipcMain.handle("vault:pick", async () => {
   }
 
   const rootPath = result.filePaths[0];
+  const configPath = path.join(rootPath, CONFIG_FILENAME);
+  if (!(await fileExists(configPath))) {
+    throw new Error("That directory isn't a Moss library. Create a new library instead.");
+  }
   const vault = await scanVault(rootPath);
   await rememberVault(rootPath);
   return vault;

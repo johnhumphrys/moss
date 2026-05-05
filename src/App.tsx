@@ -467,6 +467,8 @@ function App() {
       loadLibrary(nextLibrary);
       await refreshAppState();
       setSettingsOpen(false);
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Could not open library.");
     } finally {
       setIsPicking(false);
     }
@@ -492,13 +494,6 @@ function App() {
     }
   };
 
-
-  const updateTheme = async (nextTheme: ThemeMode) => {
-    setTheme(nextTheme);
-    if (library && hasDesktopBridge) {
-      await getBridge().persistTheme(library.rootPath, nextTheme);
-    }
-  };
 
   async function updateShowInfo(nextShowInfo: boolean) {
     setShowInfo(nextShowInfo);
