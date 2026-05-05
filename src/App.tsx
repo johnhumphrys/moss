@@ -1411,6 +1411,11 @@ function App() {
               </div>
             ) : null}
             {errorMessage ? <p className="error-copy">{errorMessage}</p> : null}
+            <div className="settings-footer">
+              <a href="https://github.com/johnhumphrys/moss" target="_blank" rel="noreferrer" className="settings-link">
+                github.com/johnhumphrys/moss
+              </a>
+            </div>
           </section>
         </div>
       ) : null}

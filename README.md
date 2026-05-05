@@ -3,26 +3,34 @@
 [![CI](https://github.com/johnhumphrys/moss/actions/workflows/ci.yml/badge.svg)](https://github.com/johnhumphrys/moss/actions/workflows/ci.yml)
 ![Coverage](https://img.shields.io/badge/coverage-80%25%2B-brightgreen)
 
-Moss is a local-first Electron app for turning ordinary folders into a visual moodboard library. It is designed first as a browsing and curation experience: cinematic albums, fast image viewing, drag-and-drop organization, and a filesystem-native workflow where your content stays in normal directories.
+Moss is a desktop app for browsing your image folders as a visual library. Point it at a folder, and it turns everything inside into albums you can browse, star, and organise — without moving your files or locking them into any format.
 
-## Overview
+It's for people who keep images in folders and want a nicer way to look at them.
 
-Moss treats a root folder as your visual library. Each folder becomes an album, nested folders become sub-albums, and a hidden `.moss` file stores app metadata like theme, starred assets, and album naming without taking ownership away from the filesystem.
+## What it does
 
-The goal is to feel more like a personal visual workspace than an image editor:
-- browse albums as collage-style covers
-- open images in a focused viewer
-- star images and surface them across albums
-- drag images between albums
-- create and rename albums from inside the app
-- keep everything local and human-readable on disk
+- Your folders become albums. Nested folders become sub-albums. Nothing moves.
+- Browse albums as collage-style covers and open images in a focused full-screen viewer.
+- Star images to surface them across your whole library.
+- Drag images between albums, create new ones, rename them — all from inside the app.
+- Everything stays as normal files on disk. Open them in anything else whenever you like.
+
+Moss stores one small metadata file (`.moss`) at your library root for things like theme preference and starred images. That's the only thing it adds.
+
+## Download
+
+Grab the latest release from the [GitHub releases page](https://github.com/johnhumphrys/moss/releases).
+
+macOS only for now (Apple Silicon + Intel). After installing, if macOS flags it as unverified, go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+---
 
 ## How It Works
 
 - The library root is a normal directory on your machine.
 - Albums are normal folders inside that root.
 - Sub-albums are nested folders.
-- Images remain regular files that can still be accessed outside Moss.
+- Images remain regular files accessible outside Moss.
 - `.moss` stores Moss-specific metadata in the root folder.
 
 Example `.moss`:
@@ -54,14 +62,14 @@ Example `.moss`:
 
 ## Quality Gates
 
-The repo is set up to run the following on every push and pull request through GitHub Actions:
+Runs on every push and pull request via GitHub Actions:
 
 - `npm run lint`
 - `npm run test`
 - `npm run test:coverage`
 - `npm run build`
 
-Coverage thresholds are enforced in the repo, with an 80%+ minimum for the covered utility modules and supporting tests across unit, integration, and UI layers.
+Coverage thresholds are enforced at 80%+ for utility modules across unit, integration, and UI layers.
 
 ## Development
 

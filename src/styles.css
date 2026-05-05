@@ -241,6 +241,23 @@ select {
   color: var(--danger);
 }
 
+.settings-footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, rgba(255,255,255,0.08));
+}
+
+.settings-link {
+  font-size: 0.75rem;
+  color: var(--text-muted, #888);
+  text-decoration: none;
+}
+
+.settings-link:hover {
+  color: var(--text, #fff);
+  text-decoration: underline;
+}
+
 .toast-notification {
   position: fixed;
   bottom: 24px;
